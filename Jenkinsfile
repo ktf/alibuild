@@ -1,5 +1,5 @@
 node ("slc7_x86-64-light") {
-  stage "Test help"
+  stage "Simple tests"
 
   def test_script = """
       rm -fr alibuild alidist
