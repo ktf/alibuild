@@ -1,4 +1,5 @@
 node ("slc7_x86-64-light") {
+
   stage "Simple tests"
 
   def test_script = """
