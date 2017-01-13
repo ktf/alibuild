@@ -476,7 +476,7 @@ def doMain():
       p["ver"] = p["ver"] if p["ver"] else spec.get("tag", spec["version"])
       debug("cloning %s%s for development" % (spec["package"], " version "+p["ver"] if p["ver"] else ""))
       updateReferenceRepos(args.referenceSources, spec["package"], spec)
-      err = execute(format("git clone %(readRepo)s%(branch)s --reference %(refSource)s %(cd)s && " +
+      err = execute(format("git clone %(readRepo)s%(branch)s --recursive --reference %(refSource)s %(cd)s && " +
                            "cd %(cd)s && git remote set-url --push origin %(writeRepo)s",
                            readRepo=spec["source"],
                            writeRepo=writeRepo,
@@ -690,7 +690,7 @@ def doMain():
             err, out = getstatusoutput(cmd)
             dieOnError(err, "Unable to detect current commit hash.")
             spec["commit_hash"] = out.strip()
-            cmd = "cd %s && git diff -r HEAD && git status --porcelain" % spec["source"]
+            cmd = "cd %s && git diff -r HEAD --ignore-submodules && git status --porcelain" % spec["source"]
             h = Hasher()
             err = execute(cmd, h)
             dieOnError(err, "Unable to detect source code changes.")
