@@ -101,7 +101,7 @@ class TestRecipes(unittest.TestCase):
                                         Recoder())
     assert(disable == ["bar", "foo"])
     print(overrides)
-    assert(overrides == {'.*': {}, 'root': {'requires': 'GCC'}})
+    assert(overrides == {'defaults-release': {}, 'root': {'requires': 'GCC'}})
     assert(taps == {'root': 'dist:ROOT@master'})
     print err, overrides, taps
     print disable
