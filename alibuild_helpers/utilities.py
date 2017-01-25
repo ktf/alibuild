@@ -206,7 +206,7 @@ def parseDefaults(disable, defaultsGetter, log):
     return ("overrides should be a dictionary", None, None)
   overrides, taps = {}, {}
   commonEnv = {"env": defaultsMeta["env"]} if "env" in defaultsMeta else {}
-  overrides[".*"] = commonEnv
+  overrides["defaults-release"] = commonEnv
   for k, v in defaultsMeta.get("overrides", {}).items():
     f = k.split("@", 1)[0].lower()
     if "@" in k:
