@@ -50,6 +50,7 @@ def doParseArgs(star):
                       action="store_true", help="Prints what would happen, without actually doing it.")
 
   subparsers = parser.add_subparsers(dest='action')
+  architecture_parser = subparsers.add_parser("architecture", help="display detected architecture")
   analytics_parser = subparsers.add_parser("analytics", help="turn on / off analytics")
   build_parser = subparsers.add_parser("build", help="build a package")
   clean_parser = subparsers.add_parser("clean", help="cleanup build area")
@@ -140,6 +141,7 @@ def doParseArgs(star):
   init_parser.add_argument("--reference-sources", dest="referenceSources", default="%(workDir)s/MIRROR")
   init_parser.add_argument("--dist", dest="dist", default="", type=lambda x : alidist_string(x, star),
                            help="Prepare development mode by downloading the given recipes set ([user/repo@]branch)")
+
   # Options for the version subcommand
   version_parser.add_argument("--architecture", "-a", dest="architecture",
                       default=detectArch())
@@ -183,7 +185,7 @@ ARCHITECTURE_TABLE = [
 def finaliseArgs(args, parser, star):
 
   # Nothing to finalise for version or analytics
-  if args.action in ["version", "analytics"]:
+  if args.action in ["version", "analytics", "architecture"]:
     return args
 
   # --architecture can be specified in both clean and build.
