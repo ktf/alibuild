@@ -14,6 +14,7 @@ from alibuild_helpers.utilities import Hasher
 from alibuild_helpers.utilities import yamlDump
 from alibuild_helpers.utilities import resolve_tag, resolve_version
 from alibuild_helpers.git import git, clone_speedup_options
+from alibuild_helpers.sl import sapling
 from alibuild_helpers.sync import (NoRemoteSync, HttpRemoteSync, S3RemoteSync,
                                    Boto3RemoteSync, RsyncRemoteSync)
 import yaml
@@ -318,6 +319,17 @@ def better_tarball(spec, old, new):
   hashes = spec["local_hashes" if old_is_local else "remote_hashes"]
   return old if hashes.index(old_hash) < hashes.index(new_hash) else new
 
+class SCM(object):
+  def whereAmI(self, directory):
+    raise NotImplementedError
+
+class Git(SCM):
+  def whereAmI(self, directory):
+    return git(("rev-parse", "HEAD"), directory)
+
+class Sapling(SCM):
+  def whereAmI(self, directory):
+    return sapling(("whereami", ), directory)
 
 def doBuild(args, parser):
   if args.remoteStore.startswith("http"):
@@ -363,7 +375,14 @@ def doBuild(args, parser):
   if not exists(specDir):
     makedirs(specDir)
 
-  os.environ["ALIBUILD_ALIDIST_HASH"] = git(("rev-parse", "HEAD"), directory=args.configDir)
+  # if the alidist workdir contains a .git directory, we use Git as SCM
+  # otherwise we use Sapling
+  if exists("%s/.git" % args.configDir):
+    scm = Git()
+  else:
+    scm = Sapling()
+
+  os.environ["ALIBUILD_ALIDIST_HASH"] = scm.whereAmI(directory=args.configDir)
 
   debug("Building for architecture %s", args.architecture)
   debug("Number of parallel builds: %d", args.jobs)
