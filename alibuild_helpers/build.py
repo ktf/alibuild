@@ -14,6 +14,7 @@ from alibuild_helpers.utilities import Hasher
 from alibuild_helpers.utilities import yamlDump
 from alibuild_helpers.utilities import resolve_tag, resolve_version
 from alibuild_helpers.git import git, clone_speedup_options
+from alibuild_helpers.sl import sapling
 from alibuild_helpers.sync import (NoRemoteSync, HttpRemoteSync, S3RemoteSync,
                                    Boto3RemoteSync, RsyncRemoteSync)
 import yaml
@@ -62,6 +63,10 @@ def update_git_repos(args, specs, buildOrder, develPkgs):
 
     def update_repo(package, git_prompt):
         specs[package]["scm"] = Git()
+        if package in develPkgs:
+          localCheckout = os.path.join(os.getcwd(), specs[package]["package"])
+          if exists("%s/.sl" % localCheckout):
+            specs[package]["scm"] = Sapling()
         updateReferenceRepoSpec(args.referenceSources, package, specs[package],
                                 fetch=args.fetchRepos,
                                 usePartialClone=not args.docker,
@@ -368,6 +373,27 @@ class Git(SCM):
   def checkUntracked(self, line):
     return line.startswith("?? ")
 
+class Sapling(SCM):
+  name = "Sapling"
+  def whereAmI(self, directory):
+    return sapling(("whereami", ), directory)
+  def branchOrRef(self, directory):
+    # Format is <hash>[+] <branch>
+    identity = sapling(("identify", ), directory)
+    return identity.split(" ")[-1]
+  def exec(self, *args, **kwargs):
+    return sapling(*args, **kwargs)
+  def parseRefs(self, output):
+    return {
+      sl_ref: sl_hash for sl_ref, sep, sl_hash
+      in (line.partition("\t") for line in output.splitlines()) if sep
+    }
+  def prefecthCmd(self):
+    return ["bookmark", "--list", "--remote", "-R"]
+  def diffCmd(self, directory):
+    return "cd %s && sl diff && sl status" % directory
+  def checkUntracked(self, line):
+    return line.startswith("? ")
 
 def doBuild(args, parser):
   if args.remoteStore.startswith("http"):
@@ -417,8 +443,10 @@ def doBuild(args, parser):
   # otherwise we use Sapling
   if exists("%s/.git" % args.configDir):
     scm = Git()
+  elif exists("%s/.sl" % args.configDir):
+    scm = Sapling()
   else:
-    error("Cannot find .git directory in %s.", args.configDir)
+    error("Cannot find SCM directory in %s.", args.configDir)
     return 1
 
   os.environ["ALIBUILD_ALIDIST_HASH"] = scm.whereAmI(directory=args.configDir)
