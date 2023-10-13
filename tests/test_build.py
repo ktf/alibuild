@@ -323,13 +323,13 @@ class BuildTestCase(unittest.TestCase):
                            (root, TEST_ROOT_GIT_REFS),
                            (extra, TEST_EXTRA_GIT_REFS)):
             spec.setdefault("requires", []).append(default["package"])
-            spec["git_refs"] = {ref: hash for hash, _, ref in (
+            spec["scm_refs"] = {ref: hash for hash, _, ref in (
                 line.partition("\t") for line in refs.splitlines()
             )}
             try:
-                spec["commit_hash"] = spec["git_refs"]["refs/tags/" + spec["tag"]]
+                spec["commit_hash"] = spec["scm_refs"]["refs/tags/" + spec["tag"]]
             except KeyError:
-                spec["commit_hash"] = spec["git_refs"]["refs/heads/" + spec["tag"]]
+                spec["commit_hash"] = spec["scm_refs"]["refs/heads/" + spec["tag"]]
         specs = {pkg["package"]: pkg for pkg in (default, zlib, root, extra)}
 
         storeHashes("defaults-release", specs, isDevelPkg=False, considerRelocation=False)
