@@ -10,11 +10,13 @@ except ImportError:
     from ordereddict import OrderedDict
 
 from alibuild_helpers.workarea import updateReferenceRepoSpec
+from alibuild_helpers.git import Git
 
 
 MOCK_SPEC = OrderedDict((
     ("package", "AliRoot"),
     ("source", "https://github.com/alisw/AliRoot"),
+    ("scm", Git()),
 ))
 
 
