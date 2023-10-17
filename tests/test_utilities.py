@@ -115,6 +115,7 @@ BUG_REPORT_URL="https://bugs.sabayon.org/"
 
 architecturePayloads = [
   ['osx_x86-64', False, [], ('','',''), 'Darwin', 'x86-64'],
+  ['osx_arm64', False, [], ('','',''), 'Darwin', 'arm64'],
   ['slc5_x86-64', False, [], ('redhat', '5.XX', 'Boron'), 'Linux', 'x86-64'],
   ['slc6_x86-64', False, [], ('centos', '6.X', 'Carbon'), 'Linux', 'x86-64'],
   ['slc7_x86-64', False, [], ('centos', '7.X', 'Ptor'), 'Linux', 'x86-64'],
