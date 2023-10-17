@@ -96,7 +96,7 @@ jobs:
           # Apparently, patching os.readlink in unit tests interferes with
           # finding some source files, but our source shouldn't be affected, so
           # ignore these errors.
-          coverage json --ignore-errors -o coverage.json
+          coverage json -o coverage.json
 
       - name: Upload coverage information
         if: ${{ always() && github.event.repository.owner.login == 'alisw' }}
