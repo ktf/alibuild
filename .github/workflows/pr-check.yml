@@ -18,10 +18,11 @@ permissions: {}
 jobs:
   unittest:
     name: python${{ matrix.python-version }}
-    runs-on: ubuntu-20.04
+    runs-on: ${{ matrix.os }}
 
     strategy:
       matrix:
+        os: [macos-latest, ubuntu-20.04]
         python-version:
           - '3.6.8'   # slc7, slc8 and cs8 containers
           - '3.7'
