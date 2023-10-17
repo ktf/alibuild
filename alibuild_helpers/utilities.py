@@ -132,6 +132,9 @@ def format(s, **kwds):
 
 
 def doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor):
+  print(platformTuple)
+  print(platformSystem)
+  print(platformSystem == "Darwin")
   if platformSystem == "Darwin":
     processor = platformProcessor
     if not processor:
