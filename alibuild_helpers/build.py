@@ -14,6 +14,7 @@ from alibuild_helpers.utilities import Hasher
 from alibuild_helpers.utilities import yamlDump
 from alibuild_helpers.utilities import resolve_tag, resolve_version
 from alibuild_helpers.git import git, clone_speedup_options, Git
+from alibuild_helpers.sl import sapling, Sapling
 from alibuild_helpers.sync import (NoRemoteSync, HttpRemoteSync, S3RemoteSync,
                                    Boto3RemoteSync, RsyncRemoteSync)
 import yaml
@@ -62,6 +63,10 @@ def update_git_repos(args, specs, buildOrder, develPkgs):
 
     def update_repo(package, git_prompt):
         specs[package]["scm"] = Git()
+        if package in develPkgs:
+          localCheckout = os.path.join(os.getcwd(), specs[package]["package"])
+          if exists("%s/.sl" % localCheckout):
+            specs[package]["scm"] = Sapling()
         updateReferenceRepoSpec(args.referenceSources, package, specs[package],
                                 fetch=args.fetchRepos,
                                 usePartialClone=not args.docker,
@@ -364,10 +369,20 @@ def doBuild(args, parser):
   if not exists(specDir):
     makedirs(specDir)
 
-  # By default Git is our SCM, so we find the commit hash of alidist
-  # using it.
+  # If the alidist workdir contains a .git directory, we use Git as SCM
+  # otherwise we use Sapling
+
   scm = Git()
-  os.environ["ALIBUILD_ALIDIST_HASH"] = scm.checkedOutCommitName(directory=args.configDir)
+  try:
+    checkedOutCommitName = scm.checkedOutCommitName(directory=args.configDir)
+  except:
+    scm = Sapling()
+    try:
+      checkedOutCommitName = scm.checkedOutCommitName(directory=args.configDir)
+    except:
+      error("Cannot find SCM directory in %s.", args.configDir)
+      return 1
+  os.environ["ALIBUILD_ALIDIST_HASH"] = checkedOutCommitName
 
   debug("Building for architecture %s", args.architecture)
   debug("Number of parallel builds: %d", args.jobs)
