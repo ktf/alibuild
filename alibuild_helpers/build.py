@@ -174,15 +174,8 @@ def storeHashes(package, specs, isDevelPkg, considerRelocation):
   if spec.get("force_rebuild", False):
     h_all(str(time.time()))
 
-  def hash_data_for_key(key):
-    if sys.version_info[0] < 3 and key in spec and isinstance(spec[key], OrderedDict):
-      # Python 2: use YAML dict order to prevent changing hashes
-      return str(yaml.safe_load(yamlDump(spec[key])))
-    else:
-      return str(spec.get(key, "none"))
-
-  for x in ("recipe", "version", "package"):
-    h_all(hash_data_for_key(x))
+  for key in ("recipe", "version", "package"):
+    h_all(spec.get(key, "none"))
 
   # commit_hash could be a commit hash (if we're not building a tag, but
   # instead e.g. a branch or particular commit specified by its hash), or it
@@ -221,8 +214,29 @@ def storeHashes(package, specs, isDevelPkg, considerRelocation):
     for _, _, hasher in h_alternatives:
       hasher(data)
 
-  for x in ("env", "append_path", "prepend_path"):
-    h_all(hash_data_for_key(x))
+  for key in ("env", "append_path", "prepend_path"):
+    if sys.version_info[0] < 3 and key in spec and isinstance(spec[key], OrderedDict):
+      # Python 2: use YAML dict order to prevent changing hashes
+      h_all(str(yaml.safe_load(yamlDump(spec[key]))))
+    elif key not in spec:
+      h_all("none")
+    else:
+      # spec["env"] is of type OrderedDict[str, str].
+      # spec["*_path"] are of type OrderedDict[str, list[str]].
+      assert isinstance(spec[key], OrderedDict), \
+        "spec[%r] was of type %r" % (key, type(spec[key]))
+
+      # Python 3.12 changed the string representation of OrderedDicts from
+      # OrderedDict([(key, value)]) to OrderedDict({key: value}), so to remain
+      # compatible, we need to emulate the previous string representation.
+      h_all("OrderedDict([")
+      h_all(", ".join(
+        # XXX: We still rely on repr("str") being "'str'",
+        # and on repr(["a", "b"]) being "['a', 'b']".
+        "(%r, %r)" % (key, value)
+        for key, value in spec[key].items()
+      ))
+      h_all("])")
 
   for tag, commit_hash, hasher in h_alternatives:
     # If the commit hash is a real hash, and not a tag, we can safely assume
@@ -340,7 +354,6 @@ def doBuild(args, parser):
     syncHelper = NoRemoteSync()
 
   packages = args.pkgname
-  dockerImage = args.dockerImage if "dockerImage" in args else None
   specs = {}
   buildOrder = []
   workDir = abspath(args.workDir)
@@ -390,7 +403,7 @@ def doBuild(args, parser):
 
   install_wrapper_script("git", workDir)
 
-  with DockerRunner(dockerImage, ["--network=host"]) as getstatusoutput_docker:
+  with DockerRunner(args.dockerImage, args.docker_extra_args) as getstatusoutput_docker:
     my_gzip = "pigz" if getstatusoutput_docker("which pigz")[0] == 0 else "gzip"
     my_tar = ("tar --ignore-failed-read"
               if getstatusoutput_docker("tar --ignore-failed-read -cvvf "
@@ -919,7 +932,7 @@ def doBuild(args, parser):
     # parts depending on it, but we do not guaranteed anything for the order in
     # which unrelated components are activated.
     dependencies = "ALIBUILD_ARCH_PREFIX=\"${ALIBUILD_ARCH_PREFIX:-%s}\"\n" % args.architecture
-    dependenciesInit = "echo ALIBUILD_ARCH_PREFIX=\"\${ALIBUILD_ARCH_PREFIX:-%s}\" >> $INSTALLROOT/etc/profile.d/init.sh\n" % args.architecture
+    dependenciesInit = "echo ALIBUILD_ARCH_PREFIX=\"\\${ALIBUILD_ARCH_PREFIX:-%s}\" >> $INSTALLROOT/etc/profile.d/init.sh\n" % args.architecture
     for dep in spec.get("requires", []):
       depSpec = specs[dep]
       depInfo = {
@@ -931,7 +944,7 @@ def doBuild(args, parser):
       }
       dependencies += format("[ -z ${%(bigpackage)s_REVISION+x} ] && source \"$WORK_DIR/$ALIBUILD_ARCH_PREFIX/%(package)s/%(version)s-%(revision)s/etc/profile.d/init.sh\"\n",
                              **depInfo)
-      dependenciesInit += format('echo [ -z \${%(bigpackage)s_REVISION+x} ] \&\& source \${WORK_DIR}/\${ALIBUILD_ARCH_PREFIX}/%(package)s/%(version)s-%(revision)s/etc/profile.d/init.sh >> \"$INSTALLROOT/etc/profile.d/init.sh\"\n',
+      dependenciesInit += format('echo [ -z \\${%(bigpackage)s_REVISION+x} ] \\&\\& source \\${WORK_DIR}/\\${ALIBUILD_ARCH_PREFIX}/%(package)s/%(version)s-%(revision)s/etc/profile.d/init.sh >> \"$INSTALLROOT/etc/profile.d/init.sh\"\n',
                              **depInfo)
     dependenciesDict = {}
     for dep in spec.get("full_requires", []):
@@ -968,7 +981,7 @@ def doBuild(args, parser):
       pathVal = isinstance(pathVal, list) and pathVal or [ pathVal ]
       if pathName == "DYLD_LIBRARY_PATH":
         continue
-      environment += format("\ncat << \EOF >> \"$INSTALLROOT/etc/profile.d/init.sh\"\nexport %(key)s=$%(key)s:%(value)s\nEOF",
+      environment += format("\ncat << \\EOF >> \"$INSTALLROOT/etc/profile.d/init.sh\"\nexport %(key)s=$%(key)s:%(value)s\nEOF",
                             key=pathName,
                             value=":".join(pathVal))
 
@@ -985,7 +998,7 @@ def doBuild(args, parser):
     for pathName,pathVal in pathDict.items():
       if pathName == "DYLD_LIBRARY_PATH":
         continue
-      environment += format("\ncat << \EOF >> \"$INSTALLROOT/etc/profile.d/init.sh\"\nexport %(key)s=%(value)s${%(key)s+:$%(key)s}\nEOF",
+      environment += format("\ncat << \\EOF >> \"$INSTALLROOT/etc/profile.d/init.sh\"\nexport %(key)s=%(value)s${%(key)s+:$%(key)s}\nEOF",
                             key=pathName,
                             value=":".join(pathVal))
 
@@ -1096,10 +1109,10 @@ def doBuild(args, parser):
         "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
         "{overrideSource} {extraArgs} {image} bash -ex /build.sh"
       ).format(
-        image=quote(dockerImage),
+        image=quote(args.dockerImage),
         workdir=quote(abspath(args.workDir)),
         scriptDir=quote(scriptDir),
-        extraArgs=args.docker_extra_args if "docker_extra_args" in args else "",
+        extraArgs=" ".join(map(quote, args.docker_extra_args)),
         overrideSource="-e SOURCE0_DIR_OVERRIDE=/" if source.startswith("/") else "",
         additionalEnv=" ".join(
           "-e {}={}".format(var, quote(value)) for var, value in buildEnvironment),

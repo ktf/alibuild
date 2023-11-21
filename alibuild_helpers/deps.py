@@ -13,16 +13,11 @@ def doDeps(args, parser):
   if not args.outgraph:
     parser.error("Specify a PDF output file with --outgraph")
 
-  # In case we are using Docker
-  dockerImage = args.dockerImage if "dockerImage" in args else ""
-  if args.docker and not dockerImage:
-    dockerImage = "alisw/%s-builder" % args.architecture.split("_")[0]
-
   # Resolve all the package parsing boilerplate
   specs = {}
   defaultsReader = lambda: readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
   (err, overrides, taps) = parseDefaults(args.disable, defaultsReader, debug)
-  with DockerRunner(dockerImage, ["--network=host"]) as getstatusoutput_docker:
+  with DockerRunner(args.dockerImage, args.docker_extra_args) as getstatusoutput_docker:
     systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = [args.package],
                      specs                   = specs,
@@ -59,6 +54,11 @@ def doDeps(args, parser):
   all_both = all_build.intersection(all_runtime)
 
   dot = "digraph {\n"
+  dot += "ratio=\"0.52\"\n"
+  dot += 'graph [nodesep=0.25, ranksep=0.2];\n'
+  dot += 'node [width=1.5, height=1, fonsize=46, margin=0.1];\n'
+  dot += 'edge [penwidth=2];\n'
+
   for k,spec in specs.items():
     if k == "defaults-release":
       continue

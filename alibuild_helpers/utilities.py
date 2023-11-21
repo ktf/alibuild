@@ -150,7 +150,7 @@ def doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, pl
   distribution = distribution.lower()
   # If platform.dist does not return something sensible,
   # let's try with /etc/os-release
-  if distribution not in ["ubuntu", "redhat", "centos", "almalinux", "rockylinux"] and hasOsRelease:
+  if distribution not in ["ubuntu", "red hat enterprise linux", "redhat", "centos", "almalinux", "rockylinux"] and hasOsRelease:
     for x in osReleaseLines:
       key, is_prop, val = x.partition("=")
       if not is_prop:
@@ -170,7 +170,7 @@ def doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, pl
     if version in debian_ubuntu:
       distribution = "ubuntu"
       version = debian_ubuntu[version]
-  elif distribution in ["redhat", "centos", "almalinux", "rockylinux"]:
+  elif distribution in ["redhat", "red hat enterprise linux", "centos", "almalinux", "rockylinux"]:
     distribution = "slc"
 
   processor = platformProcessor
