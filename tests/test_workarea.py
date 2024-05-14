@@ -17,12 +17,12 @@ MOCK_SPEC = OrderedDict((
     ("package", "AliRoot"),
     ("source", "https://github.com/alisw/AliRoot"),
     ("scm", Git()),
+    ("is_devel_pkg", False),
 ))
 
 
 @patch("alibuild_helpers.workarea.debug", new=MagicMock())
-@patch("alibuild_helpers.workarea.info", new=MagicMock())
-@patch("alibuild_helpers.workarea.clone_speedup_options",
+@patch("alibuild_helpers.git.clone_speedup_options",
        new=MagicMock(return_value=["--filter=blob:none"]))
 class WorkareaTestCase(unittest.TestCase):
 
@@ -40,7 +40,7 @@ class WorkareaTestCase(unittest.TestCase):
         updateReferenceRepoSpec(referenceSources="sw/MIRROR", p="AliRoot",
                                 spec=spec, fetch=True)
         mock_exists.assert_called_with("%s/sw/MIRROR/aliroot" % getcwd())
-        mock_makedirs.assert_called_with("%s/sw/MIRROR" % getcwd())
+        mock_makedirs.assert_called_with("%s/sw/MIRROR" % getcwd(), exist_ok=True)
         mock_git.assert_not_called()
         self.assertEqual(spec.get("reference"), "%s/sw/MIRROR/aliroot" % getcwd())
 
@@ -61,9 +61,9 @@ class WorkareaTestCase(unittest.TestCase):
                                 spec=spec, fetch=True)
         mock_exists.assert_called_with("%s/sw/MIRROR/aliroot" % getcwd())
         mock_exists.assert_has_calls([])
-        mock_makedirs.assert_called_with("%s/sw/MIRROR" % getcwd())
+        mock_makedirs.assert_called_with("%s/sw/MIRROR" % getcwd(), exist_ok=True)
         mock_git.assert_called_once_with([
-            "fetch", "-f", "--tags", spec["source"], "+refs/heads/*:refs/heads/*",
+            "fetch", "-f", spec["source"], "+refs/tags/*:refs/tags/*", "+refs/heads/*:refs/heads/*",
         ], directory="%s/sw/MIRROR/aliroot" % getcwd(), check=False, prompt=True)
         self.assertEqual(spec.get("reference"), "%s/sw/MIRROR/aliroot" % getcwd())
 
@@ -78,7 +78,7 @@ class WorkareaTestCase(unittest.TestCase):
         updateReferenceRepoSpec(referenceSources="sw/MIRROR", p="AliRoot",
                                 spec=spec, fetch=True)
         mock_exists.assert_called_with("%s/sw/MIRROR/aliroot" % getcwd())
-        mock_makedirs.assert_called_with("%s/sw/MIRROR" % getcwd())
+        mock_makedirs.assert_called_with("%s/sw/MIRROR" % getcwd(), exist_ok=True)
         mock_git.assert_not_called()
         self.assertNotIn("reference", spec,
                          "should delete spec['reference'], as no mirror exists")
@@ -95,7 +95,7 @@ class WorkareaTestCase(unittest.TestCase):
         updateReferenceRepoSpec(referenceSources="sw/MIRROR", p="AliRoot",
                                 spec=spec, fetch=True)
         mock_exists.assert_called_with("%s/sw/MIRROR/aliroot" % getcwd())
-        mock_makedirs.assert_called_with("%s/sw/MIRROR" % getcwd())
+        mock_makedirs.assert_called_with("%s/sw/MIRROR" % getcwd(), exist_ok=True)
         mock_git.assert_called_once_with([
             "clone", "--bare", spec["source"],
             "%s/sw/MIRROR/aliroot" % getcwd(), "--filter=blob:none",

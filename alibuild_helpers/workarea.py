@@ -2,14 +2,15 @@ import codecs
 import errno
 import os
 import os.path
+import shutil
 import tempfile
 try:
   from collections import OrderedDict
 except ImportError:
   from ordereddict import OrderedDict
 
-from alibuild_helpers.log import dieOnError, debug, info, error
-from alibuild_helpers.git import clone_speedup_options
+from alibuild_helpers.log import dieOnError, debug, error
+from alibuild_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash
 
 FETCH_LOG_NAME = "fetch-log.txt"
 
@@ -38,8 +39,7 @@ def logged_scm(scm, package, referenceSources,
   must not contain any secrets. We only output the SCM command we ran, its exit
   code, and the package name, so this should be safe.
   """
-  # This might take a long time, so show the user what's going on.
-  info("%s %s for repository for %s...", scm.name, command[0], package)
+  debug("%s %s for repository for %s...", scm.name, command[0], package)
   err, output = scm.exec(command, directory=directory, check=False, prompt=prompt)
   if logOutput:
     debug(output)
@@ -54,7 +54,7 @@ def logged_scm(scm, package, referenceSources,
       error("Could not write error log from SCM command:", exc_info=exc)
   dieOnError(err, "Error during %s %s for reference repo for %s." %
              (scm.name.lower(), command[0], package))
-  info("Done %s %s for repository for %s", scm.name.lower(), command[0], package)
+  debug("Done %s %s for repository for %s", scm.name.lower(), command[0], package)
   return output
 
 
@@ -94,18 +94,15 @@ def updateReferenceRepo(referenceSources, p, spec,
   @fetch            : whether to fetch updates: if False, only clone if not found
   """
   assert isinstance(spec, OrderedDict)
-  if "source" not in spec:
-    return
+  if spec["is_devel_pkg"] or "source" not in spec:
+    return None
 
   scm = spec["scm"]
 
   debug("Updating references.")
   referenceRepo = os.path.join(os.path.abspath(referenceSources), p.lower())
 
-  try:
-    os.makedirs(os.path.abspath(referenceSources))
-  except:
-    pass
+  call_ignoring_oserrors(os.makedirs, os.path.abspath(referenceSources), exist_ok=True)
 
   if not is_writeable(referenceSources):
     if os.path.exists(referenceRepo):
@@ -116,10 +113,10 @@ def updateReferenceRepo(referenceSources, p, spec,
       return None  # no reference can be found and created (not fatal)
 
   if not os.path.exists(referenceRepo):
-    cmd = scm.cloneCmd(spec["source"], referenceRepo, usePartialClone)
+    cmd = scm.cloneReferenceCmd(spec["source"], referenceRepo, usePartialClone)
     logged_scm(scm, p, referenceSources, cmd, ".", allowGitPrompt)
   elif fetch:
-    cmd = scm.fetchCmd(spec["source"])
+    cmd = scm.fetchCmd(spec["source"], "+refs/tags/*:refs/tags/*", "+refs/heads/*:refs/heads/*")
     logged_scm(scm, p, referenceSources, cmd, referenceRepo, allowGitPrompt)
 
   return referenceRepo  # reference is read-write
@@ -131,3 +128,55 @@ def is_writeable(dirpath):
       return True
   except:
     return False
+
+
+def checkout_sources(spec, work_dir, reference_sources, containerised_build):
+  """Check out sources to be compiled, potentially from a given reference."""
+  scm = spec["scm"]
+
+  def scm_exec(command, directory=".", check=True):
+    """Run the given SCM command, simulating a shell exit code."""
+    try:
+      logged_scm(scm, spec["package"], reference_sources, command, directory, prompt=False)
+    except SystemExit as exc:
+      if check:
+        raise
+      return exc.code
+    return 0
+
+  source_parent_dir = os.path.join(work_dir, "SOURCES", spec["package"], spec["version"])
+  # The build script expects SOURCEDIR to be named after the shortened commit
+  # hash, not the full one.
+  source_dir = os.path.join(source_parent_dir, short_commit_hash(spec))
+  os.makedirs(source_parent_dir, exist_ok=True)
+
+  if spec["commit_hash"] != spec["tag"]:
+    symlink(spec["commit_hash"], os.path.join(source_parent_dir, spec["tag"].replace("/", "_")))
+
+  if "source" not in spec:
+    # There are no sources, so just create an empty SOURCEDIR.
+    os.makedirs(source_dir, exist_ok=True)
+  elif spec["is_devel_pkg"]:
+    shutil.rmtree(source_dir, ignore_errors=True)
+    # In a container, we mount development packages' source dirs in /.
+    # Outside a container, we have access to the source dir directly.
+    symlink("/" + os.path.basename(spec["source"])
+            if containerised_build else spec["source"],
+            source_dir)
+  elif os.path.isdir(source_dir):
+    # Sources are a relative path or URL and the local repo already exists, so
+    # checkout the right commit there.
+    err = scm_exec(scm.checkoutCmd(spec["tag"]), source_dir, check=False)
+    if err:
+      # If we can't find the tag, it might be new. Fetch tags and try again.
+      tag_ref = "refs/tags/{0}:refs/tags/{0}".format(spec["tag"])
+      scm_exec(scm.fetchCmd(spec["source"], tag_ref), source_dir)
+      scm_exec(scm.checkoutCmd(spec["tag"]), source_dir)
+  else:
+    # Sources are a relative path or URL and don't exist locally yet, so clone
+    # and checkout the git repo from there.
+    shutil.rmtree(source_dir, ignore_errors=True)
+    scm_exec(scm.cloneSourceCmd(spec["source"], source_dir, spec.get("reference"),
+                                usePartialClone=True))
+    scm_exec(scm.setWriteUrlCmd(spec.get("write_repo", spec["source"])), source_dir)
+    scm_exec(scm.checkoutCmd(spec["tag"]), source_dir)

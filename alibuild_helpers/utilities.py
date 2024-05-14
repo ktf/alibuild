@@ -3,7 +3,7 @@ import yaml
 from os.path import exists
 import hashlib
 from glob import glob
-from os.path import basename, join
+from os.path import basename, join, isdir, islink
 import sys
 import os
 import re
@@ -19,20 +19,58 @@ try:
 except ImportError:
   from pipes import quote  # Python 2.7
 
-from alibuild_helpers.cmd import decode_with_fallback, getoutput
+from alibuild_helpers.cmd import getoutput
 from alibuild_helpers.git import git
-from alibuild_helpers.log import dieOnError
+from alibuild_helpers.log import warning, dieOnError
 
 
 class SpecError(Exception):
   pass
 
+
+def call_ignoring_oserrors(function, *args, **kwargs):
+  try:
+    return function(*args, **kwargs)
+  except OSError:
+    return None
+
+
+def symlink(link_target, link_name):
+  """Match the behaviour of `ln -nsf LINK_TARGET LINK_NAME`, without having to fork.
+
+  Create a new symlink named LINK_NAME pointing to LINK_TARGET. If LINK_NAME
+  is a directory, create a symlink named basename(LINK_TARGET) inside it.
+  """
+  # If link_name is a symlink pointing to a directory, isdir() will return True.
+  if isdir(link_name) and not islink(link_name):
+    link_name = join(link_name, basename(link_target))
+  call_ignoring_oserrors(os.unlink, link_name)
+  os.symlink(link_target, link_name)
+
+
 asList = lambda x : x if type(x) == list else [x]
 
-# This function is only needed to check the coverage of the testsuite
-# is really happening and we did not made a mistake in tox.ini
-def check_coverage():
-  return True
+
+def topological_sort(specs):
+  """Topologically sort specs so that dependencies come before the packages that depend on them.
+
+  This function returns a generator, yielding package names in order.
+
+  The algorithm used here was adapted from:
+  http://www.stoimen.com/blog/2012/10/01/computer-algorithms-topological-sort-of-a-graph/
+  """
+  edges = [(spec["package"], dep) for spec in specs.values() for dep in spec["requires"]]
+  leaves = [spec["package"] for spec in specs.values() if not spec["requires"]]
+  while leaves:
+    current_package = leaves.pop(0)
+    yield current_package
+    # Find every package that depends on the current one.
+    new_leaves = {pkg for pkg, dep in edges if dep == current_package}
+    # Stop blocking packages that depend on the current one...
+    edges = [(pkg, dep) for pkg, dep in edges if dep != current_package]
+    # ...but keep blocking those that still depend on other stuff!
+    leaves.extend(new_leaves - {pkg for pkg, _ in edges})
+
 
 def resolve_store_path(architecture, spec_hash):
   """Return the path where a tarball with the given hash is to be stored.
@@ -50,6 +88,18 @@ def resolve_links_path(architecture, package):
   root of the remote store.
   """
   return "/".join(("TARS", architecture, package))
+
+
+def short_commit_hash(spec):
+  """Shorten the spec's commit hash to make it more human-readable.
+
+  This is complicated by the fact that the commit_hash property is not
+  necessarily a commit hash, but might be a tag name. If it is a tag name,
+  return it as-is, else assume it is actually a commit hash and shorten it.
+  """
+  if spec["tag"] == spec["commit_hash"]:
+    return spec["commit_hash"]
+  return spec["commit_hash"][:10]
 
 
 # Date fields to substitute: they are zero-padded
@@ -74,27 +124,31 @@ def resolve_version(spec, defaults, branch_basename, branch_stream):
   - %(day)s
   - %(hour)s
 
-  with the calculated content"""
+  with the calculated content.
+  """
   defaults_upper = defaults != "release" and "_" + defaults.upper().replace("-", "_") or ""
   commit_hash = spec.get("commit_hash", "hash_unknown")
   tag = str(spec.get("tag", "tag_unknown"))
-  return format(spec["version"],
-                commit_hash=commit_hash,
-                short_hash=commit_hash[0:10],
-                tag=tag,
-                branch_basename = branch_basename,
-                branch_stream = branch_stream or tag,
-                tag_basename=basename(tag),
-                defaults_upper=defaults_upper,
-                **nowKwds)
+  return spec["version"] % {
+    "commit_hash": commit_hash,
+    "short_hash": commit_hash[0:10],
+    "tag": tag,
+    "branch_basename": branch_basename,
+    "branch_stream": branch_stream or tag,
+    "tag_basename": basename(tag),
+    "defaults_upper": defaults_upper,
+    **nowKwds,
+  }
 
 def resolve_tag(spec):
-  """Expand the version replacing the following keywords:
+  """Expand the tag, replacing the following keywords:
   - %(year)s
   - %(month)s
   - %(day)s
-  - %(hour)s"""
-  return format(spec["tag"], **nowKwds)
+  - %(hour)s
+  """
+  return spec["tag"] % nowKwds
+
 
 def normalise_multiple_options(option, sep=","):
   return [x for x in ",".join(option).split(sep) if x]
@@ -131,10 +185,6 @@ def validateDefaults(finalPkgSpec, defaults):
                   (finalPkgSpec["package"],
                    defaults,
                    "\n".join([" - " + x for x in validDefaults])), validDefaults)
-
-
-def format(s, **kwds):
-  return decode_with_fallback(s) % kwds
 
 
 def doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor):
@@ -278,10 +328,10 @@ class GitReader(object):
     err, d = git(("show", "{gh}:{fn}.sh".format(gh=gh, fn=fn.lower())),
                  directory=self.configDir)
     if err:
-      raise RuntimeError(format("Cannot read recipe %(fn)s from reference %(gh)s.\n" +
-                                "Make sure you run first (this will not alter your recipes):\n" +
-                                "  cd %(dist)s && git remote update -p && git fetch --tags",
-                                dist=self.configDir, gh=gh, fn=fn))
+      raise RuntimeError("Cannot read recipe {fn} from reference {gh}.\n"
+                         "Make sure you run first (this will not alter your recipes):\n"
+                         "  cd {dist} && git remote update -p && git fetch --tags"
+                         .format(dist=self.configDir, gh=gh, fn=fn))
     return d
 
 def yamlLoad(s):
@@ -366,21 +416,45 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   validDefaults = []  # empty list: all OK; None: no valid default; non-empty list: list of valid ones
   while packages:
     p = packages.pop(0)
-    if p in specs:
+    if p in specs or (p == "defaults-release" and ("defaults-" + defaults) in specs):
       continue
-    lowerPkg = p.lower()
-    filename = taps.get(lowerPkg, "%s/%s.sh" % (configDir, lowerPkg))
+
+    # We rewrite all defaults to "defaults-release", so load the correct
+    # defaults package here.
+    # The reason for this rewriting is (I assume) so that packages that are
+    # not overridden by some defaults can be shared with other defaults, since
+    # they will end up with the same hash. The defaults must be called
+    # "defaults-release" for this to work, since the defaults are a dependency
+    # and all dependencies' names go into a package's hash.
+    pkg_filename = ("defaults-" + defaults) if p == "defaults-release" else p.lower()
+    filename = taps.get(pkg_filename, "%s/%s.sh" % (configDir, pkg_filename))
     err, spec, recipe = parseRecipe(getRecipeReader(filename, configDir))
     dieOnError(err, err)
-    dieOnError(spec["package"].lower() != lowerPkg,
+    dieOnError(spec["package"].lower() != pkg_filename,
                "%s.sh has different package field: %s" % (p, spec["package"]))
+
+    if p == "defaults-release":
+      # Re-rewrite the defaults' name to "defaults-release". Everything auto-
+      # depends on "defaults-release", so we need something with that name.
+      spec["package"] = "defaults-release"
+
+      # Never run the defaults' recipe, to match previous behaviour.
+      # Warn if a non-trivial recipe is found (i.e., one with any non-comment lines).
+      for line in map(str.strip, recipe.splitlines()):
+        if line and not line.startswith("#"):
+          warning("%s.sh contains a recipe, which will be ignored", pkg_filename)
+      recipe = ""
+
     dieOnError(spec["package"] != p,
                "%s should be spelt %s." % (p, spec["package"]))
 
     # If an override fully matches a package, we apply it. This means
     # you can have multiple overrides being applied for a given package.
     for override in overrides:
-      if not re.match("^" + override.strip("^$") + "$", lowerPkg):
+      # We downcase the regex in parseDefaults(), so downcase the package name
+      # as well. FIXME: This is probably a bad idea; we should use
+      # re.IGNORECASE instead or just match case-sensitively.
+      if not re.fullmatch(override, p.lower()):
         continue
       log("Overrides for package %s: %s", spec["package"], overrides[override])
       spec.update(overrides.get(override, {}) or {})
@@ -482,7 +556,8 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     spec["tag"] = spec.get("tag", spec["version"])
     spec["version"] = spec["version"].replace("/", "_")
     spec["recipe"] = recipe.strip("\n")
-    spec["force_rebuild"] = spec["package"] in force_rebuild
+    if spec["package"] in force_rebuild:
+      spec["force_rebuild"] = True
     specs[spec["package"]] = spec
     packages += spec["requires"]
   return (systemPackages, ownPackages, failedRequirements, validDefaults)

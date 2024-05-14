@@ -12,9 +12,6 @@ set +h
 function hash() { true; }
 export WORK_DIR="${WORK_DIR_OVERRIDE:-%(workDir)s}"
 
-# From our dependencies
-%(dependencies)s
-
 # Insert our own wrapper scripts into $PATH, patched to use the system OpenSSL,
 # instead of the one we build ourselves.
 export PATH=$WORK_DIR/wrapper-scripts:$PATH
@@ -30,7 +27,6 @@ export PATH=$WORK_DIR/wrapper-scripts:$PATH
 # - DEPS_HASH
 # - DEVEL_HASH
 # - DEVEL_PREFIX
-# - GIT_TAG
 # - INCREMENTAL_BUILD_HASH
 # - JOBS
 # - PKGHASH
@@ -39,22 +35,20 @@ export PATH=$WORK_DIR/wrapper-scripts:$PATH
 # - PKGVERSION
 # - REQUIRES
 # - RUNTIME_REQUIRES
-# - WRITE_REPO
 
 export PKG_NAME="$PKGNAME"
 export PKG_VERSION="$PKGVERSION"
 export PKG_BUILDNUM="$PKGREVISION"
 
-export SOURCE0="${SOURCE0_DIR_OVERRIDE:-%(sourceDir)s}%(sourceName)s"
 export PKGPATH=${ARCHITECTURE}/${PKGNAME}/${PKGVERSION}-${PKGREVISION}
 mkdir -p "$WORK_DIR/BUILD" "$WORK_DIR/SOURCES" "$WORK_DIR/TARS" \
          "$WORK_DIR/SPECS" "$WORK_DIR/INSTALLROOT"
 export BUILDROOT="$WORK_DIR/BUILD/$PKGHASH"
 
-# In case the repository is local, it means we are in development mode, so we
-# install directly in $WORK_DIR/$PKGPATH so that we can do make install
-# directly into BUILD/$PKGPATH and have changes being propagated.
-if [ "${SOURCE0:0:1}" == "/" ]; then
+# If we are in development mode, then install directly in $WORK_DIR/$PKGPATH,
+# so that we can do "make install" directly into BUILD/$PKGPATH and have
+# changes being propagated.
+if [ -n "$DEVEL_HASH" ]; then
   export INSTALLROOT="$WORK_DIR/$PKGPATH"
 else
   export INSTALLROOT="$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
@@ -62,13 +56,6 @@ fi
 export SOURCEDIR="$WORK_DIR/SOURCES/$PKGNAME/$PKGVERSION/$COMMIT_HASH"
 export BUILDDIR="$BUILDROOT/$PKGNAME"
 
-SHORT_TAG=${GIT_TAG:0:10}
-mkdir -p $(dirname $SOURCEDIR)
-if [[ ${COMMIT_HASH} != ${GIT_TAG} && "${SHORT_TAG:-0}" != ${COMMIT_HASH} ]]; then
-  GIT_TAG_DIR=${GIT_TAG:-0}
-  GIT_TAG_DIR=${GIT_TAG_DIR//\//_}
-  ln -snf ${COMMIT_HASH} "$WORK_DIR/SOURCES/$PKGNAME/$PKGVERSION/${GIT_TAG_DIR}"
-fi
 rm -fr "$WORK_DIR/INSTALLROOT/$PKGHASH"
 # We remove the build directory only if we are not in incremental mode.
 if [[ "$INCREMENTAL_BUILD_HASH" == 0 ]] && ! rm -rf "$BUILDROOT"; then
@@ -78,39 +65,43 @@ if [[ "$INCREMENTAL_BUILD_HASH" == 0 ]] && ! rm -rf "$BUILDROOT"; then
   rm -rf "$BUILDROOT"
 fi
 mkdir -p "$INSTALLROOT" "$BUILDROOT" "$BUILDDIR" "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
+
+cd "$WORK_DIR/INSTALLROOT/$PKGHASH"
+cat > "$INSTALLROOT/.meta.json" <<\EOF
+%(provenance)s
+EOF
+
+# Add "source" command for dependencies to init.sh.
+# Install init.sh now, so that it is available for debugging in case the build fails.
+mkdir -p "$INSTALLROOT/etc/profile.d"
+rm -f "$INSTALLROOT/etc/profile.d/init.sh"
+cat <<\EOF > "$INSTALLROOT/etc/profile.d/init.sh"
+%(initdotsh_deps)s
+EOF
+
+# Apply dependency initialisation now, but skip setting the variables below until after the build.
+. "$INSTALLROOT/etc/profile.d/init.sh"
+
+# Add support for direnv https://github.com/direnv/direnv/
+#
+# This is beneficial for all the cases where the build step requires some
+# environment to be properly setup in order to work. e.g. to support ninja or
+# protoc.
+cat << EOF > "$BUILDDIR/.envrc"
+# Source the build environment which was used for this package
+WORK_DIR=\${WORK_DIR:-$WORK_DIR} source "\${WORK_DIR:-$WORK_DIR}/${INSTALLROOT#$WORK_DIR/}/etc/profile.d/init.sh"
+source_up
+# On mac we build with the proper installation relative RPATH,
+# so this is not actually used and it's actually harmful since
+# startup time is reduced a lot by the extra overhead from the
+# dynamic loader
+unset DYLD_LIBRARY_PATH
+EOF
+
 cd "$BUILDROOT"
 ln -snf $PKGHASH $WORK_DIR/BUILD/$PKGNAME-latest
 if [[ $DEVEL_PREFIX ]]; then
   ln -snf $PKGHASH $WORK_DIR/BUILD/$PKGNAME-latest-$DEVEL_PREFIX
-fi
-
-# Reference statements
-%(referenceStatement)s
-%(gitOptionsStatement)s
-
-if [ -z "$CACHED_TARBALL" ]; then
-  case "$SOURCE0" in
-    '')  # SOURCE0 is empty, so just create an empty SOURCEDIR.
-      mkdir -p "$SOURCEDIR" ;;
-    /*)  # SOURCE0 is an absolute path, so just make a symlink there.
-      ln -snf "$SOURCE0" "$SOURCEDIR" ;;
-    *)   # SOURCE0 is a relative path or URL, so clone/checkout the git repo from there.
-      if cd "$SOURCEDIR" 2>/dev/null; then
-        # Folder is already present, but check that it is the right tag
-        if ! git checkout -f "$GIT_TAG"; then
-          # If we can't find the tag, it might be new. Fetch tags and try again.
-          git fetch -f "$SOURCE0" "refs/tags/$GIT_TAG:refs/tags/$GIT_TAG"
-          git checkout -f "$GIT_TAG"
-        fi
-      else
-        # In case there is a stale link / file, for whatever reason.
-        rm -rf "$SOURCEDIR"
-        git clone -n $GIT_CLONE_SPEEDUP ${GIT_REFERENCE:+--reference "$GIT_REFERENCE"} "$SOURCE0" "$SOURCEDIR"
-        cd "$SOURCEDIR"
-        git remote set-url --push origin "$WRITE_REPO"
-        git checkout -f "$GIT_TAG"
-      fi ;;
-  esac
 fi
 
 cd "$BUILDDIR"
@@ -154,37 +145,21 @@ else
   rm -rf $WORK_DIR/TMP/$PKGHASH
 fi
 
-cd "$WORK_DIR/INSTALLROOT/$PKGHASH"
-echo "$PKGHASH" > "$INSTALLROOT/.build-hash"
-cat <<\EOF | tr \' \" >"$INSTALLROOT/.full-dependencies"
-%(dependenciesJSON)s
-EOF
-
+# Regenerate init.sh, in case the package build clobbered it. This
+# particularly happens in the AliEn-Runtime package, since it copies other
+# packages into its installroot wholesale.
 mkdir -p "$INSTALLROOT/etc/profile.d"
-BIGPKGNAME=`echo "$PKGNAME" | tr [:lower:] [:upper:] | tr - _`
 rm -f "$INSTALLROOT/etc/profile.d/init.sh"
-
-# Init our dependencies
-%(dependenciesInit)s
-
-cat << EOF >> $INSTALLROOT/etc/profile.d/init.sh
-export ${BIGPKGNAME}_ROOT=\${WORK_DIR}/\${ALIBUILD_ARCH_PREFIX}/$PKGNAME/$PKGVERSION-$PKGREVISION
-export ${BIGPKGNAME}_VERSION=$PKGVERSION
-export ${BIGPKGNAME}_REVISION=$PKGREVISION
-export ${BIGPKGNAME}_HASH=$PKGHASH
-export ${BIGPKGNAME}_COMMIT=${COMMIT_HASH}
+cat <<\EOF > "$INSTALLROOT/etc/profile.d/init.sh"
+%(initdotsh_full)s
 EOF
 
-# Add support for direnv https://github.com/direnv/direnv/
-#
-# This is beneficial for all the cases where the build step requires some
-# environment to be properly setup in order to work. e.g. to support ninja or
-# protoc.
-cat << EOF > $BUILDDIR/.envrc
+cd "$WORK_DIR/INSTALLROOT/$PKGHASH"
+# Replace the .envrc to point to the final installation directory.
+cat << EOF > "$BUILDDIR/.envrc"
 # Source the build environment which was used for this package
-WORK_DIR=$WORK_DIR source ../../../$PKGPATH/etc/profile.d/init.sh
+WORK_DIR=\${WORK_DIR:-$WORK_DIR} source ../../../$PKGPATH/etc/profile.d/init.sh
 source_up
-
 # On mac we build with the proper installation relative RPATH,
 # so this is not actually used and it's actually harmful since
 # startup time is reduced a lot by the extra overhead from the
@@ -192,8 +167,9 @@ source_up
 unset DYLD_LIBRARY_PATH
 EOF
 
-# Environment
-%(environment)s
+cat > "$INSTALLROOT/.meta.json" <<\EOF
+%(provenance)s
+EOF
 
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
 # Find which files need relocation.
@@ -225,10 +201,11 @@ fi
 if [[ ${ARCHITECTURE:0:3} == "osx" ]]; then
   otool_arch=$(echo "${ARCHITECTURE#osx_}" | tr - _)  # otool knows x86_64, not x86-64
 
-  /usr/bin/find ${RELOCATE_PATHS:-bin lib lib64} -type f \
-                -not -name '*.py' -not -name '*.pyc' -not -name '*.h' -not -name '*.js' \
-                -not -name '*.txt' -not -name '*.dat' -not -name '*.sav' -not -name '*.wav' \
-                -not -name '*.png' -not -name '*.css' -not -name '*.cc' |
+  /usr/bin/find ${RELOCATE_PATHS:-bin lib lib64} -type d \( -name '*.dist-info' -o -path '*/pytz/zoneinfo' \) -prune -false -o -type f \
+                -not -name '*.py' -not -name '*.pyc' -not -name '*.pyi' -not -name '*.pxd' -not -name '*.inc' -not -name '*.js' -not -name '*.json' \
+                -not -name '*.xml' -not -name '*.xsl' -not -name '*.txt' -not -name '*.dat' -not -name '*.mat' -not -name '*.sav' -not -name '*.csv' \
+                -not -name '*.wav' -not -name '*.png' -not -name '*.svg' -not -name '*.css' -not -name '*.html' -not -name '*.woff' -not -name '*.woff2' -not -name '*.ttf' \
+                -not -name LICENSE -not -name COPYING -not -name '*.c' -not -name '*.cc' -not -name '*.cxx' -not -name '*.cpp' -not -name '*.h' -not -name '*.hpp' |
     while read -r BIN; do
       MACHOTYPE=$(set +o pipefail; otool -arch "$otool_arch" -h "$PWD/$BIN" 2> /dev/null | grep filetype -A1 | awk 'END{print $5}')
 
@@ -291,10 +268,12 @@ if [ "$CAN_DELETE" = 1 ]; then
   # There might be an old existing tarball, and we should delete it.
   rm -f "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
 elif [ -z "$CACHED_TARBALL" ]; then
+  # Use pigz to compress, if we can, because it's multicore.
+  gzip=$(command -v pigz) || gzip=$(command -v gzip)
   # We don't have an existing tarball, and we want to keep the one we create now.
   tar -cC "$WORK_DIR/INSTALLROOT/$PKGHASH" . |
     # Avoid having broken left overs if the tar fails.
-    $MY_GZIP -c > "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing"
+    $gzip -c > "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing"
   mv "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing" \
      "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
   ln -nfs "../../$HASH_PATH/$PACKAGE_WITH_REV" \
@@ -313,6 +292,9 @@ if [[ $BUILD_FAMILY ]]; then
   ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
 fi
 
+# When the package is definitely fully installed, install the file that marks
+# the package as successful.
+echo "$PKGHASH" > "$WORK_DIR/$PKGPATH/.build-hash"
 # Mark the build as successful with a placeholder. Allows running incremental
 # recipe in case the package is in development mode.
 echo "${DEVEL_HASH}${DEPS_HASH}" > "$BUILDDIR/.build_succeeded"

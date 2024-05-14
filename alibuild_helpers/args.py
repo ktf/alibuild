@@ -1,6 +1,5 @@
 import argparse
-from alibuild_helpers.utilities import format, detectArch
-from alibuild_helpers.utilities import normalise_multiple_options
+from alibuild_helpers.utilities import detectArch, normalise_multiple_options
 from alibuild_helpers.workarea import cleanup_git_log
 import multiprocessing
 
@@ -105,6 +104,12 @@ def doParseArgs():
                                   "same effect as adding 'force_rebuild: true' to its recipe "
                                   "in CONFIGDIR. You can specify this option multiple times or "
                                   "separate multiple arguments with commas."))
+  build_parser.add_argument("--annotate", default=[], action="append", metavar="PACKAGE=COMMENT",
+                            help=("Store COMMENT in the build metadata for PACKAGE. This option "
+                                  "can be given multiple times, if you want to store comments "
+                                  "in multiple packages. The comment will only be stored if "
+                                  "PACKAGE is compiled or downloaded during this run; if it "
+                                  "already exists, this does not happen."))
 
   build_docker = build_parser.add_argument_group(title="Build inside a container", description="""\
   Builds can be done inside a Docker container, to make it easier to get a
@@ -272,6 +277,29 @@ def doParseArgs():
                                    "Passed through verbatim -- separate multiple arguments "
                                    "with spaces, and make sure quoting is correct! Implies --docker."))
 
+  doctor_remote = doctor_parser.add_argument_group(title="Re-use prebuilt tarballs", description="""\
+  Reusing prebuilt tarballs saves compilation time, as common packages need not
+  be rebuilt from scratch. rsync://, https://, b3:// and s3:// remote stores
+  are recognised. Some of these require credentials: s3:// remotes require an
+  ~/.s3cfg; b3:// remotes require AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+  environment variables. A useful remote store is
+  'https://s3.cern.ch/swift/v1/alibuild-repo'. It requires no credentials and
+  provides tarballs for the most common supported architectures.
+  """)
+  doctor_remote.add_argument("--no-remote-store", action="store_true",
+                            help="Disable the use of the remote store, even if it is enabled by default.")
+  doctor_remote.add_argument("--remote-store", dest="remoteStore", metavar="STORE", default="", help="""\
+  Where to find prebuilt tarballs to reuse. See above for available remote stores.
+  End with ::rw if you want to upload (in that case, ::rw is stripped and --write-store
+  is set to the same value). Implies --no-system. May be set to a default store on some
+  architectures; use --no-remote-store to disable it in that case.
+  """)
+  doctor_remote.add_argument("--write-store", dest="writeStore", metavar="STORE", default="",
+                            help=("Where to upload newly built packages. Same syntax as --remote-store, "
+                                  "except ::rw is not recognised. Implies --no-system."))
+  doctor_remote.add_argument("--insecure", dest="insecure", action="store_true",
+                            help="Don't validate TLS certificates when connecting to an https:// remote store.")
+
   doctor_dirs = doctor_parser.add_argument_group(title="Customise aliBuild directories")
   doctor_dirs.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
                            help=("Change to the specified directory before doing anything. "
@@ -355,11 +383,12 @@ On Linux, x86-64:
 On Linux, POWER8 / PPC64 (little endian):
    RHEL7 / CC7 compatible: slc7_ppc64
 
-On Mac, x86-64:
-   Yosemite to Big Sur: osx_x86-64
-   Big Sur: osx_arm64
+On Mac, 1-2 latest supported OSX versions:
+   Intel: osx_x86-64
+   Apple Silicon: osx_arm64
 """
 
+# When updating this variable, also update docs/user.markdown!
 S3_SUPPORTED_ARCHS = "slc7_x86-64", "slc8_x86-64", "ubuntu2004_x86-64", "ubuntu2204_x86-64", "slc9_x86-64"
 
 def finaliseArgs(args, parser):
@@ -386,7 +415,7 @@ def finaliseArgs(args, parser):
     args.force_rebuild = normalise_multiple_options(args.force_rebuild)
 
   if args.action in ["build", "init"]:
-    args.referenceSources = format(args.referenceSources, workDir=args.workDir)
+    args.referenceSources = args.referenceSources % {"workDir": args.workDir}
     # Do this cleanup as early as possible to avoid false positives due to
     # stale git logs from previous invocations.
     cleanup_git_log(args.referenceSources)
@@ -410,7 +439,17 @@ def finaliseArgs(args, parser):
     if args.docker and not args.dockerImage:
       args.dockerImage = "registry.cern.ch/alisw/%s-builder" % args.architecture.split("_")[0]
 
-  if args.action == "build":
+  if "annotate" in args:
+    for comment_assignment in args.annotate:
+      if "=" not in comment_assignment:
+        parser.error("--annotate takes arguments of the form PACKAGE=COMMENT")
+    args.annotate = {
+      package: comment
+      for package, _, comment
+      in (assignment.partition("=") for assignment in args.annotate)
+    }
+
+  if args.action in ("build", "doctor"):
     args.configDir = args.configDir
 
     # On selected platforms, caching is active by default
@@ -441,7 +480,7 @@ def finaliseArgs(args, parser):
       args.develPrefix = "%s-%s" % (args.develPrefix, args.architecture) if "develPrefix" in args else args.architecture
 
   if args.action == "init":
-    args.configDir = format(args.configDir, prefix=args.develPrefix+"/")
+    args.configDir = args.configDir % {"prefix": args.develPrefix + "/"}
   elif args.action == "build":
     pass
   elif args.action == "clean":

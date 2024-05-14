@@ -1,10 +1,11 @@
 from shlex import quote  # Python 3.3+
 from alibuild_helpers.cmd import getstatusoutput
 from alibuild_helpers.log import debug
-from alibuild_helpers.scm import SCM
+from alibuild_helpers.scm import SCM, SCMError
 
 SL_COMMAND_TIMEOUT_SEC = 120
 """How many seconds to let any sl command execute before being terminated."""
+
 
 # Sapling is a novel SCM by Meta (i.e. Facebook) that is fully compatible with
 # git, but has a different command line interface. Among the reasons why it's
@@ -14,25 +15,36 @@ SL_COMMAND_TIMEOUT_SEC = 120
 # command line from each commit of a branch.
 class Sapling(SCM):
   name = "Sapling"
+
   def checkedOutCommitName(self, directory):
     return sapling(("whereami", ), directory)
+
   def branchOrRef(self, directory):
     # Format is <hash>[+] <branch>
     identity = sapling(("identify", ), directory)
     return identity.split(" ")[-1]
+
   def exec(self, *args, **kwargs):
     return sapling(*args, **kwargs)
+
   def parseRefs(self, output):
     return {
       sl_ref: sl_hash for sl_ref, sep, sl_hash
       in (line.partition("\t") for line in output.splitlines()) if sep
     }
-  def listRefsCmd(self):
-    return ["bookmark", "--list", "--remote", "-R"]
+
+  def listRefsCmd(self, repository):
+    return ["bookmark", "--list", "--remote", "-R", repository]
+
   def diffCmd(self, directory):
     return "cd %s && sl diff && sl status" % directory
+
   def checkUntracked(self, line):
     return line.startswith("? ")
+  def cloneCmd(self, source, referenceRepo, usePartialClone):
+    cmd = ["clone", source, referenceRepo]
+    return cmd
+
 
 def sapling(args, directory=".", check=True, prompt=True):
   debug("Executing sl %s (in directory %s)", " ".join(args), directory)
@@ -49,5 +61,5 @@ def sapling(args, directory=".", check=True, prompt=True):
     args=" ".join(map(quote, args)),
   ), timeout=SL_COMMAND_TIMEOUT_SEC)
   if check and err != 0:
-    raise RuntimeError("Error {} from sl {}: {}".format(err, " ".join(args), output))
+    raise SCMError("Error {} from sl {}: {}".format(err, " ".join(args), output))
   return output if check else (err, output)
