@@ -2,6 +2,7 @@ from shlex import quote
 from alibuild_helpers.cmd import getstatusoutput
 from alibuild_helpers.log import debug
 from alibuild_helpers.scm import SCM, SCMError
+import os
 
 GIT_COMMAND_TIMEOUT_SEC = 120
 """How many seconds to let any git command execute before being terminated."""
