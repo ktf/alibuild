@@ -6,16 +6,9 @@ import re
 import sys
 import unittest
 # Assuming you are using the mock library to ... mock things
-try:
-    from unittest.mock import call, patch, MagicMock, DEFAULT  # In Python 3, mock is built-in
-    from io import StringIO
-except ImportError:
-    from mock import call, patch, MagicMock, DEFAULT  # Python 2
-    from StringIO import StringIO
-try:
-    from collections import OrderedDict
-except ImportError:
-    from ordereddict import OrderedDict
+from unittest.mock import call, patch, MagicMock, DEFAULT  # In Python 3, mock is built-in
+from io import StringIO
+from collections import OrderedDict
 
 from alibuild_helpers.utilities import parseRecipe, resolve_tag
 from alibuild_helpers.build import doBuild, storeHashes, generate_initdotsh
@@ -285,6 +278,7 @@ class BuildTestCase(unittest.TestCase):
             environment={},
             autoCleanup=False,
             noDevel=[],
+            onlyDeps=False,
             fetchRepos=False,
             forceTracked=False,
             plugin="legacy"
