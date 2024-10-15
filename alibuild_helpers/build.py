@@ -17,13 +17,12 @@ from alibuild_helpers.git import Git, git
 from alibuild_helpers.sl import Sapling
 from alibuild_helpers.scm import SCMError
 from alibuild_helpers.sync import remote_from_url
-import yaml
 from alibuild_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 from alibuild_helpers.log import ProgressPrint, log_current_package
 from glob import glob
 from textwrap import dedent
 from collections import OrderedDict
-from shlex import quote  # Python 3.3+
+from shlex import quote
 
 import concurrent.futures
 import importlib
@@ -187,10 +186,7 @@ def storeHashes(package, specs, considerRelocation):
       hasher(data)
 
   for key in ("env", "append_path", "prepend_path"):
-    if sys.version_info[0] < 3 and key in spec and isinstance(spec[key], OrderedDict):
-      # Python 2: use YAML dict order to prevent changing hashes
-      h_all(str(yaml.safe_load(yamlDump(spec[key]))))
-    elif key not in spec:
+    if key not in spec:
       h_all("none")
     else:
       # spec["env"] is of type OrderedDict[str, str].
@@ -480,7 +476,7 @@ def doBuild(args, parser):
     checkedOutCommitName = scm.checkedOutCommitName(directory=args.configDir)
   except SCMError:
     dieOnError(True, "Cannot find SCM directory in %s." % args.configDir)
-  os.environ["ALIBUILD_ALIDIST_HASH"] = checkedOutCommitName
+  os.environ["ALIBUILD_ALIDIST_HASH"] = checkedOutCommitName # type: ignore
 
   debug("Building for architecture %s", args.architecture)
   debug("Number of parallel builds: %d", args.jobs)
@@ -544,9 +540,17 @@ def doBuild(args, parser):
     del develCandidates, develCandidatesUpper, develPkgsUpper
 
   if buildOrder:
-    banner("Packages will be built in the following order:\n - %s",
-           "\n - ".join(x+" (development package)" if x in develPkgs else "%s@%s" % (x, specs[x]["tag"])
-                        for x in buildOrder if x != "defaults-release"))
+    if args.onlyDeps: 
+      builtPackages = buildOrder[:-1]
+    else:
+      builtPackages = buildOrder
+    if len(builtPackages) > 1:
+      banner("Packages will be built in the following order:\n - %s",
+             "\n - ".join(x+" (development package)" if x in develPkgs else "%s@%s" % (x, specs[x]["tag"])
+                          for x in builtPackages if x != "defaults-release"))
+    else:
+      banner("No dependencies of package %s to build.", buildOrder[-1])
+
 
   if develPkgs:
     banner("You have packages in development mode (%s).\n"
@@ -1122,14 +1126,19 @@ def doBuild(args, parser):
     if not spec["revision"].startswith("local"):
       syncHelper.upload_symlinks_and_tarball(spec)
 
-  banner("Build of %s successfully completed on `%s'.\n"
-         "Your software installation is at:"
-         "\n\n  %s\n\n"
-         "You can use this package by loading the environment:"
-         "\n\n  alienv enter %s/latest-%s",
-         mainPackage, socket.gethostname(),
-         abspath(join(args.workDir, args.architecture)),
-         mainPackage, mainBuildFamily)
+  if not args.onlyDeps:
+      banner("Build of %s successfully completed on `%s'.\n"
+             "Your software installation is at:"
+             "\n\n  %s\n\n"
+             "You can use this package by loading the environment:"
+             "\n\n  alienv enter %s/latest-%s",
+             mainPackage, socket.gethostname(),
+             abspath(join(args.workDir, args.architecture)),
+             mainPackage, mainBuildFamily)
+  else:
+      banner("Successfully built dependencies for package %s on `%s'.\n",
+             mainPackage, socket.gethostname()
+            )
   for spec in specs.values():
     if spec["is_devel_pkg"]:
       banner("Build directory for devel package %s:\n%s/BUILD/%s-latest%s/%s",
