@@ -1,5 +1,6 @@
 from argparse import Namespace
 import os.path as path
+import os.path
 import unittest
 from unittest.mock import call, patch  # In Python 3, mock is built-in
 from io import StringIO
@@ -25,7 +26,7 @@ CLONE_EVERYTHING = [
 
 
 class InitTestCase(unittest.TestCase):
-    def test_packageDefinition(self):
+    def test_packageDefinition(self) -> None:
       self.assertEqual(parsePackagesDefinition("AliRoot@v5-08-16,AliPhysics@v5-08-16-01"),
                        [{'ver': 'v5-08-16', 'name': 'AliRoot'},
                         {'ver': 'v5-08-16-01', 'name': 'AliPhysics'}])
@@ -36,7 +37,7 @@ class InitTestCase(unittest.TestCase):
     @patch("alibuild_helpers.init.info")
     @patch("alibuild_helpers.init.path")
     @patch("alibuild_helpers.init.os")
-    def test_doDryRunInit(self, mock_os, mock_path,  mock_info):
+    def test_doDryRunInit(self, mock_os, mock_path,  mock_info) -> None:
       fake_dist = {"repo": "alisw/alidist", "ver": "master"}
       args = Namespace(
         develPrefix = ".",
@@ -60,7 +61,7 @@ class InitTestCase(unittest.TestCase):
     @patch("alibuild_helpers.init.updateReferenceRepoSpec")
     @patch("alibuild_helpers.utilities.open")
     @patch("alibuild_helpers.init.readDefaults")
-    def test_doRealInit(self, mock_read_defaults, mock_open, mock_update_reference, mock_git, mock_os, mock_path,  mock_info, mock_banner):
+    def test_doRealInit(self, mock_read_defaults, mock_open, mock_update_reference, mock_git, mock_os, mock_path,  mock_info, mock_banner) -> None:
       fake_dist = {"repo": "alisw/alidist", "ver": "master"}
       mock_open.side_effect = lambda x: {
         "/alidist/defaults-release.sh": StringIO("package: defaults-release\nversion: v1\n---"),
@@ -82,17 +83,20 @@ class InitTestCase(unittest.TestCase):
         fetchRepos = False,
         architecture = "slc7_x86-64"
       )
-      doInit(args)
-      self.assertEqual(mock_git.mock_calls, CLONE_EVERYTHING)
-      mock_path.exists.assert_has_calls([call('.'), call('/sw/MIRROR'), call('/alidist'), call('./AliRoot')])
+      def fake_exists(n):
+          return {"/alidist/aliroot.sh": True}
+      with patch.object(os.path, "exists", fake_exists):
+        doInit(args)
+        self.assertEqual(mock_git.mock_calls, CLONE_EVERYTHING)
+        mock_path.exists.assert_has_calls([call('.'), call('/sw/MIRROR'), call('/alidist'), call('./AliRoot')])
 
-      # Force fetch repos
-      mock_git.reset_mock()
-      mock_path.reset_mock()
-      args.fetchRepos = True
-      doInit(args)
-      self.assertEqual(mock_git.mock_calls, CLONE_EVERYTHING)
-      mock_path.exists.assert_has_calls([call('.'), call('/sw/MIRROR'), call('/alidist'), call('./AliRoot')])
+        # Force fetch repos
+        mock_git.reset_mock()
+        mock_path.reset_mock()
+        args.fetchRepos = True
+        doInit(args)
+        self.assertEqual(mock_git.mock_calls, CLONE_EVERYTHING)
+        mock_path.exists.assert_has_calls([call('.'), call('/sw/MIRROR'), call('/alidist'), call('./AliRoot')])
 
 
 if __name__ == '__main__':
