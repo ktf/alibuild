@@ -544,6 +544,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
             # The version is required for all specs. What we put there will
             # influence the package's hash, so allow the user to override it.
             replacement.setdefault("version", requested_version)
+            allowSystemPackageUpload = spec.get("allow_system_package_upload", False)
             spec = replacement
             # Allows generalising the version based on the actual key provided
             spec["version"] = spec["version"].replace("%(key)s", key)
@@ -552,7 +553,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
             # the package. If not, aliBuild will still "build" it, but it's
             # basically instantaneous, so report to the user that we're taking
             # it from the system.
-            if recipe:
+            if allowSystemPackageUpload:
               ownPackages.add(spec["package"])
             else:
               systemPackages.add(spec["package"])
