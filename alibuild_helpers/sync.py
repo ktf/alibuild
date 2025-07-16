@@ -8,6 +8,7 @@ import sys
 import time
 import requests
 from requests.exceptions import RequestException
+from urllib.parse import quote
 
 from alibuild_helpers.cmd import execute
 from alibuild_helpers.log import debug, info, error, dieOnError, ProgressPrint
@@ -225,7 +226,7 @@ class HttpRemoteSync:
         # This symlink isn't in the manifest yet, and we don't have it locally,
         # so download it individually.
         symlinks[linkname] = \
-            self.getRetry("/".join((self.remoteStore, links_path, linkname)),
+            self.getRetry("/".join((self.remoteStore, links_path, quote(linkname))),
                           returnResult=True, log=False, session=session) \
                 .decode("utf-8").rstrip("\r\n")
     for linkname, target in symlinks.items():
@@ -679,6 +680,7 @@ class Boto3RemoteSync:
 
     # Second, upload dist symlinks. These should be in place before the main
     # tarball, to avoid races in the publisher.
+    start_time = time.time()
     for link_dir, symlinks in dist_symlinks.items():
       for link_key, hash_path in symlinks:
         self.s3.put_object(Bucket=self.writeStore,
@@ -688,6 +690,10 @@ class Boto3RemoteSync:
                            WebsiteRedirectLocation=hash_path)
       debug("Uploaded %d dist symlinks to S3 from %s",
             len(symlinks), link_dir)
+    end_time = time.time()
+    debug("Uploaded %d dist symlinks in %.2f seconds",
+          sum(len(symlinks) for _, symlinks in dist_symlinks.items()),
+          end_time - start_time)
 
     self.s3.upload_file(Bucket=self.writeStore, Key=tar_path,
                         Filename=os.path.join(self.workdir, tar_path))
