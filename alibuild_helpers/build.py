@@ -859,6 +859,7 @@ def doBuild(args, parser):
       # revisions, only store a local revision if there is no other candidate
       # for reuse yet.
       candidate = better_tarball(spec, candidate, (revision, rev_hash, symlink_path))
+      debug(candidate)
 
     try:
       revision, rev_hash, symlink_path = candidate
