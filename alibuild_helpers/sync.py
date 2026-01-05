@@ -114,7 +114,7 @@ class HttpRemoteSync:
           s3Request = re.match("https://s3.cern.ch/swift/v1[/]+([^/]*)/(.*)$", url)
           if s3Request:
             [bucket, prefix] = s3Request.groups()
-            url = "https://s3.cern.ch/swift/v1/%s/?prefix=%s" % (bucket, prefix.lstrip("/"))
+            url = "https://s3.cern.ch/swift/v1/{}/?prefix={}".format(bucket, prefix.lstrip("/"))
             resp = get(url, verify=not self.insecure, timeout=self.httpTimeoutSec)
             if resp.status_code == 404:
               # No need to retry any further
@@ -136,7 +136,7 @@ class HttpRemoteSync:
         if dest:
           try:
             os.unlink(dest+".tmp")
-          except:
+          except Exception:
             pass
     return None
 
@@ -165,7 +165,7 @@ class HttpRemoteSync:
       # Find the first tarball that matches any possible hash and fetch it.
       for pkg_hash in spec["remote_hashes"]:
         store_path = resolve_store_path(self.architecture, pkg_hash)
-        tarballs = self.getRetry("%s/%s/" % (self.remoteStore, store_path),
+        tarballs = self.getRetry(f"{self.remoteStore}/{store_path}/",
                                  session=session)
         if tarballs:
           use_tarball = tarballs[0]["name"]
@@ -203,7 +203,7 @@ class HttpRemoteSync:
     with requests.Session() as session:
       # Fetch manifest file with initial symlinks. This file is updated
       # regularly; we use it to avoid many small network requests.
-      manifest = self.getRetry("%s/%s.manifest" % (self.remoteStore, links_path),
+      manifest = self.getRetry(f"{self.remoteStore}/{links_path}.manifest",
                                returnResult=True, session=session)
       symlinks = {
         linkname.decode("utf-8"): target.decode("utf-8")
@@ -214,7 +214,7 @@ class HttpRemoteSync:
       # Now add any remaining symlinks that aren't in the manifest yet. There
       # should always be relatively few of these, as the separate network
       # requests are a bit expensive.
-      for link in self.getRetry("%s/%s/" % (self.remoteStore, links_path),
+      for link in self.getRetry(f"{self.remoteStore}/{links_path}/",
                                 session=session):
         linkname = link["name"]
         if linkname in symlinks:
@@ -502,12 +502,23 @@ class Boto3RemoteSync:
     # have to install it in the first place.
     try:
       import boto3
+      from botocore.config import Config
     except ImportError:
       error("boto3 must be installed to use %s", Boto3RemoteSync)
       sys.exit(1)
 
     try:
-      self.s3 = boto3.client("s3", endpoint_url="https://s3.cern.ch",
+      try:
+        config = Config(
+          request_checksum_calculation='WHEN_REQUIRED',
+          response_checksum_validation='WHEN_REQUIRED',
+        )
+      except TypeError:
+        # Older boto3 versions don't support these parameters (<1.36.0)
+        config = None
+      self.s3 = boto3.client("s3",
+                             **({"config": config} if config else {}),
+                             endpoint_url="https://s3.cern.ch",
                              aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
                              aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"])
     except KeyError:

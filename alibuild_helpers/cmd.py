@@ -6,7 +6,7 @@ from textwrap import dedent
 from subprocess import TimeoutExpired
 from shlex import quote
 
-from alibuild_helpers.log import debug, warning, dieOnError
+from alibuild_helpers.log import debug, error, dieOnError
 
 def decode_with_fallback(data):
   """Try to decode DATA as utf-8; if that doesn't work, fall back to latin-1.
@@ -29,7 +29,7 @@ def getoutput(command, timeout=None):
   try:
     stdout, stderr = proc.communicate(timeout=timeout)
   except TimeoutExpired:
-    warning("Process %r timed out; terminated", command)
+    error("Process %r timed out; terminated", command)
     proc.terminate()
     stdout, stderr = proc.communicate()
   dieOnError(proc.returncode, "Command %s failed with code %d: %s" %
@@ -43,7 +43,7 @@ def getstatusoutput(command, timeout=None, cwd=None):
   try:
     merged_output, _ = proc.communicate(timeout=timeout)
   except TimeoutExpired:
-    warning("Process %r timed out; terminated", command)
+    error("Process %r timed out; terminated", command)
     proc.terminate()
     merged_output, _ = proc.communicate()
   merged_output = decode_with_fallback(merged_output)
@@ -88,14 +88,8 @@ class DockerRunner:
   def __enter__(self):
     if self._docker_image:
       # "sleep inf" pauses forever, until we kill it.
-      envOpts = []
-      volumes = []
-      for env in self._extra_env.items():
-        envOpts.append("-e")
-        envOpts.append(f"{env[0]}={env[1]}")
-      for v in self._extra_volumes:
-        volumes.append("-v")
-        volumes.append(v)
+      envOpts = [opt for k, v in self._extra_env.items() for opt in ("-e", f"{k}={v}")]
+      volumes = [opt for v in self._extra_volumes for opt in ("-v", v)]
       cmd = ["docker", "run", "--detach"] + envOpts + volumes + ["--rm", "--entrypoint="]
       cmd += self._docker_run_args
       cmd += [self._docker_image, "sleep", "inf"]
@@ -105,13 +99,13 @@ class DockerRunner:
       if self._container is None:
         command_prefix=""
         if self._extra_env:
-          command_prefix="env " + " ".join("{}={}".format(k, quote(v)) for (k,v) in self._extra_env.items()) + " "
-        return getstatusoutput("{}{} -c {}".format(command_prefix, BASH, quote(cmd))
+          command_prefix="env " + " ".join(f"{k}={quote(v)}" for (k,v) in self._extra_env.items()) + " "
+        return getstatusoutput(f"{command_prefix}{BASH} -c {quote(cmd)}"
                              , cwd=cwd)
       envOpts = []
       for env in self._extra_env.items():
         envOpts.append("-e")
-        envOpts.append("{}={}".format(env[0], env[1]))
+        envOpts.append(f"{env[0]}={env[1]}")
       exec_cmd = ["docker", "container", "exec"] + envOpts + [self._container, "bash", "-c", cmd]
       return getstatusoutput(exec_cmd, cwd=cwd)
 
