@@ -446,7 +446,9 @@ def finaliseArgs(args, parser):
     # in docker the docker image is given by the first part of the
     # architecture we want to build for.
     if args.docker and not args.dockerImage:
-      args.dockerImage = "registry.cern.ch/alisw/%s-builder" % args.architecture.split("_")[0]
+      distro = args.architecture.split("_")[0]
+      cpu_suffix = "-arm" if args.architecture.endswith("_aarch64") else ""
+      args.dockerImage = "registry.cern.ch/alisw/%s%s-builder" % (distro, cpu_suffix)
 
   if "annotate" in args:
     for comment_assignment in args.annotate:
