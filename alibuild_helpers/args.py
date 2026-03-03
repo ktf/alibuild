@@ -428,15 +428,19 @@ def finaliseArgs(args, parser):
   if args.action in ("build", "doctor", "deps"):
     if args.dockerImage or args.docker_extra_args:
       args.docker = True
+    # In case we build with docker / containers, we add a special
+    # devel prefix (if not already present) so that we do not pollute
+    # the namespace of the current architecture
+    if args.docker and hasattr(args, "develPrefix") and not args.develPrefix:
+      args.develPrefix = args.architecture
 
     args.docker_extra_args = shlex.split(args.docker_extra_args)
-    args.docker_extra_args.append("--network=host")
 
     if args.docker and args.architecture.startswith("osx"):
       parser.error("cannot use `-a %s` and --docker" % args.architecture)
 
-    if args.docker and commands.getstatusoutput("which docker")[0]:
-      parser.error("cannot use --docker as docker executable is not found")
+    if args.docker and commands.getstatusoutput("which docker")[0] and commands.getstatusoutput("which container")[0]:
+      parser.error("cannot use --docker as no container runtime (docker or container) was found")
 
     # If specified, used the docker image requested, otherwise, if running
     # in docker the docker image is given by the first part of the
