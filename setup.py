@@ -83,6 +83,11 @@ setup(
     # https://packaging.python.org/en/latest/requirements.html
     install_requires=install_requires,
 
+    # Optional features. Signing/verifying reapi Action Cache entries needs
+    # Ed25519 from `cryptography`; it is imported lazily so the core tool works
+    # without it. `pip install alibuild[signing]`.
+    extras_require={'signing': ['cryptography']},
+
     # If there are data files included in your packages that need to be
     # installed, specify them here.  If using Python 2.6 or less, then these
     # have to be included in MANIFEST.in as well.
