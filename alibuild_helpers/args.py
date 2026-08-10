@@ -419,7 +419,9 @@ def doParseArgs():
   args = finaliseArgs(parser.parse_args(), parser)
   return (args, parser)
 
-VALID_ARCHS_RE = "^slc[5-9]_(x86-64|ppc64|aarch64)$|^(ubuntu|ubt|osx|fedora)[0-9]*_(x86-64|arm64)$"
+# slc versions are two-digit from EL10 on, so a [5-9] character class no longer
+# spans the supported range.
+VALID_ARCHS_RE = "^slc([5-9]|[1-9][0-9])_(x86-64|ppc64|aarch64)$|^(ubuntu|ubt|osx|fedora)[0-9]*_(x86-64|arm64)$"
 
 def matchValidArch(architecture):
   return bool(re.match(VALID_ARCHS_RE, architecture))
@@ -430,6 +432,7 @@ On Linux, x86-64:
    RHEL7 / CC7 compatible: slc7_x86-64
    RHEL8 / CC8 compatible: slc8_x86-64
    RHEL9 / ALMA9 compatible: slc9_x86-64
+   RHEL10 / ALMA10 compatible: slc10_x86-64
    Ubuntu 20.04 compatible: ubuntu2004_x86-64
    Ubuntu 22.04 compatible: ubuntu2204_x86-64
    Ubuntu 24.04 compatible: ubuntu2404_x86-64
