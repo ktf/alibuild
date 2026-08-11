@@ -74,7 +74,15 @@ setup(
     setup_requires=[
         # The 7.* series removed support for Python 3.6.
         'setuptools_scm<7.0.0' if sys.version_info < (3, 7) else
-        'setuptools_scm'
+        # Keep the upper bound in sync with [build-system] in pyproject.toml.
+        # It is needed in BOTH places: the RPM build runs the legacy
+        # `setup.py bdist_rpm` path, which ignores [build-system] and resolves
+        # setup_requires into .eggs/ instead. Uncapped, that picks up
+        # setuptools_scm 10.x, whose egg_info integration reads an
+        # `ignore_egg_info_in_manifest` attribute that the setuptools shipped
+        # with EL9's python3.9 does not have -- so the RPM build dies with
+        # AttributeError while a modern pip build of the same tree succeeds.
+        'setuptools_scm>=6.2,<10'
     ] + (['packaging<=23'] if sys.version_info <(3, 7) else []),
 
     # List run-time dependencies here.  These will be installed by pip when
