@@ -35,7 +35,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/') && !github.event.release.prerelease
     steps:
       - name: Checkout Homebrew repo
-        run: brew tap alisw/system-deps
+        run: |
+          brew tap alisw/system-deps
+          brew trust alisw/system-deps
       - name: Update alibuild formula with new version
         run: |
           set -x
