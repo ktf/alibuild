@@ -419,6 +419,20 @@ class S3RemoteSync:
                        "s3://{b}/$storePath/")" ]; then
         s3cmd --no-check-md5 sync -s -v --host s3.cern.ch --host-bucket {b}.s3.cern.ch \
               "s3://{b}/$storePath/" "{workDir}/$storePath/" 2>&1 || :
+        # A store object can be a redirect stub -- a short file naming the blob
+        # that holds the bytes -- instead of the tarball. s3cmd neither reports
+        # nor follows x-amz-website-redirect-location, so tell the two apart by
+        # content: a tarball starts with the gzip magic, a stub is a short path.
+        for tarball in "{workDir}/$storePath"/*.tar.gz; do
+          [ -f "$tarball" ] || continue
+          [ "$(head -c2 "$tarball" | od -An -tx1 | tr -d ' \n')" = 1f8b ] && continue
+          target=$(head -c 512 "$tarball" | tr -d ' \n')
+          case "$target" in
+            ?*/?*) s3cmd --no-check-md5 get -f -s -v --host s3.cern.ch \
+                         --host-bucket {b}.s3.cern.ch \
+                         "s3://{b}/${{target#/}}" "$tarball" 2>&1 || : ;;
+          esac
+        done
         break
       fi
     done

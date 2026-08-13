@@ -174,6 +174,18 @@ class SyncTestCase(unittest.TestCase):
         self.assertIn("%s/%s" % (store, cas), requested,
                       "the redirect was not followed: %s" % requested)
 
+    def test_s3cmd_follows_store_redirect(self):
+        """s3cmd cannot see the redirect header, so the stub is spotted by content."""
+        commands = []
+        with patch("alibuild_helpers.sync.execute",
+                   new=lambda cmd, printer=None: commands.append(cmd) or 0):
+            sync.S3RemoteSync(remoteStore="s3://localhost", writeStore="s3://localhost",
+                              architecture=ARCHITECTURE, workdir="/sw") \
+                .fetch_tarball(GOOD_SPEC)
+        self.assertIn("1f8b", commands[0],
+                      "the gzip magic check is gone, so redirect stubs would be "
+                      "saved as tarballs again")
+
     @patch("alibuild_helpers.sync.execute", new=lambda cmd, printer=None: 0)
     @patch("alibuild_helpers.sync.os")
     def test_sync(self, mock_os):
