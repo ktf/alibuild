@@ -69,7 +69,8 @@ class HttpRemoteSync:
     self.httpConnRetries = 4
     self.httpBackoff = 0.4
 
-  def getRetry(self, url, dest=None, returnResult=False, log=True, session=None, progress=debug):
+  def getRetry(self, url, dest=None, returnResult=False, log=True, session=None,
+               progress=debug, redirect_base=None):
     get = session.get if session is not None else requests.get
     url = quote(url, safe=":/")
     for i in range(0, self.httpConnRetries):
@@ -90,6 +91,21 @@ class HttpRemoteSync:
           # Destination specified -- file (dest) or buffer (returnResult).
           # Use requests in stream mode
           resp = get(url, stream=True, verify=not self.insecure, timeout=self.httpTimeoutSec)
+          if redirect_base:
+            # S3 only turns x-amz-website-redirect-location into a 301 when the
+            # bucket is served as a website; on the REST endpoint the object is
+            # returned as-is, so a store holding redirect stubs instead of bytes
+            # hands us the stub. Follow it ourselves. Only the caller fetching
+            # tarballs asks for this: symlink objects carry the same header, and
+            # there we want the body, not what it points at.
+            target = resp.headers.get("x-amz-website-redirect-location")
+            if target:
+              resp.close()
+              url = quote("/".join((redirect_base.rstrip("/"), target.lstrip("/"))),
+                          safe=":/")
+              debug("Following store redirect to %s", url)
+              resp = get(url, stream=True, verify=not self.insecure,
+                         timeout=self.httpTimeoutSec)
           size = int(resp.headers.get("content-length", "-1"))
           downloaded = 0
           reportTime = time.time()
@@ -194,7 +210,8 @@ class HttpRemoteSync:
                                  (spec["package"], spec["version"]), min_interval=5.0)
         progress("[0%%] Starting download of %s", use_tarball)  # initialise progress bar
         self.getRetry("/".join((self.remoteStore, store_path, use_tarball)),
-                      destPath, session=session, progress=progress)
+                      destPath, session=session, progress=progress,
+                      redirect_base=self.remoteStore)
         progress.end("done")
 
   def fetch_symlinks(self, spec) -> None:
@@ -412,6 +429,20 @@ class S3RemoteSync:
                        "s3://{b}/$storePath/")" ]; then
         s3cmd --no-check-md5 sync -s -v --host s3.cern.ch --host-bucket {b}.s3.cern.ch \
               "s3://{b}/$storePath/" "{workDir}/$storePath/" 2>&1 || :
+        # A store object can be a redirect stub -- a short file naming the blob
+        # that holds the bytes -- instead of the tarball. s3cmd neither reports
+        # nor follows x-amz-website-redirect-location, so tell the two apart by
+        # content: a tarball starts with the gzip magic, a stub is a short path.
+        for tarball in "{workDir}/$storePath"/*.tar.gz; do
+          [ -f "$tarball" ] || continue
+          [ "$(head -c2 "$tarball" | od -An -tx1 | tr -d ' \n')" = 1f8b ] && continue
+          target=$(head -c 512 "$tarball" | tr -d ' \n')
+          case "$target" in
+            ?*/?*) s3cmd --no-check-md5 get -f -s -v --host s3.cern.ch \
+                         --host-bucket {b}.s3.cern.ch \
+                         "s3://{b}/${{target#/}}" "$tarball" 2>&1 || : ;;
+          esac
+        done
         break
       fi
     done
