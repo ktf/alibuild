@@ -59,7 +59,8 @@ class HttpRemoteSync:
     self.httpConnRetries = 4
     self.httpBackoff = 0.4
 
-  def getRetry(self, url, dest=None, returnResult=False, log=True, session=None, progress=debug):
+  def getRetry(self, url, dest=None, returnResult=False, log=True, session=None,
+               progress=debug, redirect_base=None):
     get = session.get if session is not None else requests.get
     url = quote(url, safe=":/")
     for i in range(0, self.httpConnRetries):
@@ -80,6 +81,21 @@ class HttpRemoteSync:
           # Destination specified -- file (dest) or buffer (returnResult).
           # Use requests in stream mode
           resp = get(url, stream=True, verify=not self.insecure, timeout=self.httpTimeoutSec)
+          if redirect_base:
+            # S3 only turns x-amz-website-redirect-location into a 301 when the
+            # bucket is served as a website; on the REST endpoint the object is
+            # returned as-is, so a store holding redirect stubs instead of bytes
+            # hands us the stub. Follow it ourselves. Only the caller fetching
+            # tarballs asks for this: symlink objects carry the same header, and
+            # there we want the body, not what it points at.
+            target = resp.headers.get("x-amz-website-redirect-location")
+            if target:
+              resp.close()
+              url = quote("/".join((redirect_base.rstrip("/"), target.lstrip("/"))),
+                          safe=":/")
+              debug("Following store redirect to %s", url)
+              resp = get(url, stream=True, verify=not self.insecure,
+                         timeout=self.httpTimeoutSec)
           size = int(resp.headers.get("content-length", "-1"))
           downloaded = 0
           reportTime = time.time()
@@ -184,7 +200,8 @@ class HttpRemoteSync:
                                  (spec["package"], spec["version"]), min_interval=5.0)
         progress("[0%%] Starting download of %s", use_tarball)  # initialise progress bar
         self.getRetry("/".join((self.remoteStore, store_path, use_tarball)),
-                      destPath, session=session, progress=progress)
+                      destPath, session=session, progress=progress,
+                      redirect_base=self.remoteStore)
         progress.end("done")
 
   def fetch_symlinks(self, spec) -> None:
