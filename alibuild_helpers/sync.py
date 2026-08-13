@@ -727,7 +727,20 @@ class Boto3RemoteSync:
     if tar_exists and link_exists:
       debug("%s exists on S3 already, not uploading", tarball)
       return
-    link_body = os.readlink(os.path.join(self.workdir, link_path)).lstrip("./")
+    local_link = os.path.join(self.workdir, link_path)
+    if os.path.islink(local_link):
+      link_body = os.readlink(local_link).lstrip("./")
+    else:
+      # The tarball is in the local store but its link was never made: it was
+      # fetched from a store where the link had not been published, so
+      # fetch_symlinks had nothing to copy. The body is the store path we are
+      # about to publish, so write the link rather than failing on a state we
+      # can repair -- and before the check below, which would otherwise report
+      # a missing local file as a conflict on the remote.
+      link_body = tar_path
+      os.makedirs(os.path.dirname(local_link), exist_ok=True)
+      symlink(os.path.relpath(os.path.join(self.workdir, tar_path),
+                              os.path.dirname(local_link)), local_link)
     dieOnError(tar_exists or link_exists,
                "%s already exists on S3 but %s does not, aborting!" %
                (tar_path if tar_exists else link_path,

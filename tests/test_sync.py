@@ -338,6 +338,24 @@ class Boto3TestCase(unittest.TestCase):
         b3sync.s3.download_file.assert_not_called()
 
     @patch("os.listdir", new=lambda path: (
+        [] if path.endswith("-" + MISSING_SPEC["revision"]) else NotImplemented))
+    @patch("os.path.islink", new=MagicMock(return_value=False))
+    def test_missing_local_link_is_recreated(self) -> None:
+        """A tarball in the local store whose link was never made is publishable."""
+        b3sync = sync.Boto3RemoteSync(
+            remoteStore="b3://localhost", writeStore="b3://localhost",
+            architecture=ARCHITECTURE, workdir="/sw")
+        b3sync.s3 = self.mock_s3()
+        b3sync.upload_symlinks_and_tarball(MISSING_SPEC)
+        tar_path = os.path.join(resolve_store_path(ARCHITECTURE, NONEXISTENT_HASH),
+                                tarball_name(MISSING_SPEC))
+        b3sync.s3.put_object.assert_any_call(
+            Bucket="localhost",
+            Key=os.path.join(resolve_links_path(ARCHITECTURE, PACKAGE),
+                             tarball_name(MISSING_SPEC)),
+            Body=tar_path.encode("utf-8"))
+
+    @patch("os.listdir", new=lambda path: (
         [tarball_name(GOOD_SPEC)] if path.endswith("-" + GOOD_SPEC["revision"]) else
         [tarball_name(BAD_SPEC)] if path.endswith("-" + BAD_SPEC["revision"]) else
         [] if path.endswith("-" + MISSING_SPEC["revision"]) else
