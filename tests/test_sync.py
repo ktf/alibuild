@@ -44,12 +44,17 @@ TAR_NAMES = tarball_name(GOOD_SPEC), tarball_name(BAD_SPEC), tarball_name(MISSIN
 
 
 class MockRequest:
-    def __init__(self, j, simulate_err=False) -> None:
+    def __init__(self, j, simulate_err=False, redirect=None) -> None:
         self.j = j
         self.simulate_err = simulate_err
         self.status_code = 200 if j else 404
         self._bytes_left = 123456
         self.headers = {"content-length": str(self._bytes_left)}
+        if redirect:
+            self.headers["x-amz-website-redirect-location"] = redirect
+
+    def close(self):
+        pass
 
     def raise_for_status(self):
         return True
@@ -136,6 +141,38 @@ class SyncTestCase(unittest.TestCase):
         syncer.fetch_tarball(MISSING_SPEC)
         mock_debug.assert_called_with("Nothing fetched for %s (%s)",
                                       MISSING_SPEC["package"], NONEXISTENT_HASH)
+
+    @patch("alibuild_helpers.sync.open", new=lambda fn, mode: BytesIO())
+    @patch("os.path.isfile", new=MagicMock(return_value=False))
+    @patch("os.rename", new=MagicMock(return_value=None))
+    @patch("os.makedirs", new=MagicMock(return_value=None))
+    @patch("os.listdir", new=MagicMock(return_value=[]))
+    @patch("alibuild_helpers.sync.symlink", new=MagicMock(return_value=None))
+    @patch("requests.Session.get")
+    def test_http_follows_store_redirect(self, mock_get):
+        """A store object that is a redirect stub is followed to the real bytes."""
+        store = "https://localhost/test"
+        cas = "cas/sha256/de/deadbeef"
+        requested = []
+
+        def get(url, *args, **kw):
+            requested.append(url)
+            if url.endswith(tarball_name(GOOD_SPEC)) and "/store/" in url:
+                # The legacy store object holds no bytes, just a pointer.
+                return MockRequest([{"name": tarball_name(GOOD_SPEC)}],
+                                   redirect="/" + cas)
+            if url.endswith(cas):
+                return MockRequest([{"name": tarball_name(GOOD_SPEC)}])
+            return self.mock_get(url, *args, **kw)
+
+        mock_get.side_effect = get
+        syncer = sync.HttpRemoteSync(remoteStore=store, architecture=ARCHITECTURE,
+                                     workdir="/sw", insecure=False)
+        syncer.httpBackoff = 0
+        syncer.fetch_tarball(GOOD_SPEC)
+
+        self.assertIn("%s/%s" % (store, cas), requested,
+                      "the redirect was not followed: %s" % requested)
 
     @patch("alibuild_helpers.sync.execute", new=lambda cmd, printer=None: 0)
     @patch("alibuild_helpers.sync.os")
