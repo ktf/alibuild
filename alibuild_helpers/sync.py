@@ -533,6 +533,11 @@ class Boto3RemoteSync:
             "variables to aliBuild in order to use the S3 remote store")
       sys.exit(1)
 
+  def _put_link(self, link_path, link_body):
+    """Write the symlink object, whose body is the store path it stands for."""
+    self.s3.put_object(Bucket=self.writeStore, Key=link_path,
+                       Body=link_body.encode("utf-8"))
+
   def _s3_listdir(self, dirname):
     """List keys of items under dirname in the read bucket."""
     pages = self.s3.get_paginator("list_objects_v2") \
@@ -691,6 +696,7 @@ class Boto3RemoteSync:
     if tar_exists and link_exists:
       debug("%s exists on S3 already, not uploading", tarball)
       return
+    link_body = os.readlink(os.path.join(self.workdir, link_path)).lstrip("./")
     dieOnError(tar_exists or link_exists,
                "%s already exists on S3 but %s does not, aborting!" %
                (tar_path if tar_exists else link_path,
@@ -701,9 +707,7 @@ class Boto3RemoteSync:
 
     # Upload the smaller file first, so that any parallel uploads are more
     # likely to find it and fail.
-    self.s3.put_object(Bucket=self.writeStore, Key=link_path,
-                       Body=os.readlink(os.path.join(self.workdir, link_path))
-                              .lstrip("./").encode("utf-8"))
+    self._put_link(link_path, link_body)
 
     # Second, upload dist symlinks. These should be in place before the main
     # tarball, to avoid races in the publisher.
