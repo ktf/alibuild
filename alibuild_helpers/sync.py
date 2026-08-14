@@ -737,10 +737,13 @@ class Boto3RemoteSync:
       # about to publish, so write the link rather than failing on a state we
       # can repair -- and before the check below, which would otherwise report
       # a missing local file as a conflict on the remote.
-      link_body = tar_path
+      # A link body is the store path relative to TARS/, i.e.
+      # "<arch>/store/xx/<hash>/<tarball>" -- that is what os.readlink(...)
+      # .lstrip("./") yields for a link the build created, and fetch_symlinks
+      # prepends "../../" to it.
+      link_body = tar_path[len("TARS/"):] if tar_path.startswith("TARS/") else tar_path
       os.makedirs(os.path.dirname(local_link), exist_ok=True)
-      symlink(os.path.relpath(os.path.join(self.workdir, tar_path),
-                              os.path.dirname(local_link)), local_link)
+      symlink("../../" + link_body, local_link)
     dieOnError(tar_exists or link_exists,
                "%s already exists on S3 but %s does not, aborting!" %
                (tar_path if tar_exists else link_path,

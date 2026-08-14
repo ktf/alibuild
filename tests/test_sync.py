@@ -349,11 +349,20 @@ class Boto3TestCase(unittest.TestCase):
         b3sync.upload_symlinks_and_tarball(MISSING_SPEC)
         tar_path = os.path.join(resolve_store_path(ARCHITECTURE, NONEXISTENT_HASH),
                                 tarball_name(MISSING_SPEC))
+        # The body is the store path relative to TARS/. build.py parses the
+        # local link, which fetch_symlinks builds as "../../" + body, to work
+        # out which revisions are taken -- a body carrying the "TARS/" prefix
+        # produces a link it cannot parse, so the revision looks free and the
+        # next build collides with what is already published.
+        body = tar_path[len("TARS/"):]
         b3sync.s3.put_object.assert_any_call(
             Bucket="localhost",
             Key=os.path.join(resolve_links_path(ARCHITECTURE, PACKAGE),
                              tarball_name(MISSING_SPEC)),
-            Body=tar_path.encode("utf-8"))
+            Body=body.encode("utf-8"))
+        self.assertNotIn("TARS/", body)
+        self.assertTrue(("../../" + body).startswith("../../%s/store/" % ARCHITECTURE),
+                        "local link would not parse: %r" % ("../../" + body))
 
     @patch("os.listdir", new=lambda path: (
         [tarball_name(GOOD_SPEC)] if path.endswith("-" + GOOD_SPEC["revision"]) else
