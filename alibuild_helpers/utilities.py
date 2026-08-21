@@ -630,7 +630,30 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
             # Allows generalising the version based on the actual key provided
             spec["version"] = spec["version"].replace("%(key)s", key)
             # We need the key to inject the version into the replacement recipe later.
-            spec["key"] = key 
+            spec["key"] = key
+            # The check can also print, possibly multiple times each,
+            # alibuild_system_replace_requires/_build_requires/_track_env to
+            # append to the replacement spec. This lets a single replacement be
+            # parametrised by what the check actually found on the host. Do this
+            # before rendering fullRecipe below, so the injected values are part
+            # of the replacement's hash.
+            for what in ("requires", "build_requires"):
+              extras = [dep.strip() for dep in
+                        re.findall(r"^alibuild_system_replace_%s:(?P<dep>.*)$" % what,
+                                   output, re.MULTILINE)]
+              if extras:
+                deps = list(spec.get(what) or [])
+                deps += [dep for dep in extras if dep and dep not in deps]
+                spec[what] = deps
+            for extra in re.findall(r"^alibuild_system_replace_track_env:(?P<var>.*)$",
+                                    output, re.MULTILINE):
+              name, sep, value = extra.strip().partition("=")
+              dieOnError(not sep or not name.strip(),
+                         "Malformed alibuild_system_replace_track_env for {}: {} "
+                         "(expected <NAME>=<value>)".format(spec["package"], extra.strip()))
+              # Unlike the recipe's own track_env, the value is not shell code to
+              # be run: the check has already computed it for us.
+              spec.setdefault("track_env", OrderedDict())[name.strip()] = value
             recipe = replacement.get("recipe", "")
             # If there's an explicitly-specified recipe, we're still building
             # the package. If not, aliBuild will still "build" it, but it's
