@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from textwrap import dedent
 import unittest
 from unittest import mock
@@ -44,6 +45,43 @@ RECIPES = {
     prefer_system_replacement_specs:
         replacement:
             recipe: 'true'
+    ---
+    """),
+    "CONFIG_DIR/with-replacement-extras.sh": dedent("""\
+    package: with-replacement-extras
+    version: v1
+    prefer_system: '.*'
+    prefer_system_check: |
+        echo 'alibuild_system_replace: replacement'
+        echo 'alibuild_system_replace_requires: extra-dep'
+        echo 'alibuild_system_replace_requires: other-dep'
+        echo 'alibuild_system_replace_build_requires: extra-build-dep'
+        echo 'alibuild_system_replace_track_env: SENTINEL_ONE=magic one'
+        echo 'alibuild_system_replace_track_env: SENTINEL_TWO=magic two'
+    prefer_system_replacement_specs:
+        replacement:
+            requires:
+                - preexisting-dep
+    ---
+    """),
+    "CONFIG_DIR/extra-dep.sh": dedent("""\
+    package: extra-dep
+    version: v1
+    ---
+    """),
+    "CONFIG_DIR/other-dep.sh": dedent("""\
+    package: other-dep
+    version: v1
+    ---
+    """),
+    "CONFIG_DIR/extra-build-dep.sh": dedent("""\
+    package: extra-build-dep
+    version: v1
+    ---
+    """),
+    "CONFIG_DIR/preexisting-dep.sh": dedent("""\
+    package: preexisting-dep
+    version: v1
     ---
     """),
     "CONFIG_DIR/missing-spec.sh": dedent("""\
@@ -203,6 +241,37 @@ class ReplacementTestCase(unittest.TestCase):
             # compiling the package.
             self.assertNotIn("with-replacement-recipe", systemPkgs)
             self.assertIn("with-replacement-recipe", ownPkgs)
+
+    def test_replacement_extras_given(self) -> None:
+        """Check that the check script can append to the replacement spec.
+
+        alibuild_system_replace_{requires,build_requires,track_env} can each be
+        printed several times, and are appended to what the replacement spec
+        already declares.
+        """
+        def fake_exists(n):
+            return n in RECIPES.keys()
+        with patch.object(os.path, "exists", fake_exists):
+            specs, systemPkgs, ownPkgs, failedReqs, validDefaults, systemSpecs = \
+                getPackageListWithDefaults(["with-replacement-extras"])
+            spec = specs["with-replacement-extras"]
+            # runtime_requires keeps what the replacement spec declared, plus the
+            # injected ones; requires is runtime_requires + build_requires.
+            self.assertEqual(spec["runtime_requires"],
+                             ["preexisting-dep", "extra-dep", "other-dep"])
+            self.assertEqual(spec["build_requires"],
+                             ["extra-build-dep", "defaults-release"])
+            self.assertIn("extra-dep", spec["requires"])
+            self.assertIn("extra-build-dep", spec["requires"])
+            # The injected dependencies must actually be resolved.
+            for dep in ("preexisting-dep", "extra-dep", "other-dep", "extra-build-dep"):
+                self.assertIn(dep, specs)
+            # Values are taken verbatim from the check output, not run as code.
+            # build.py asserts the type, so it must be an OrderedDict.
+            self.assertIsInstance(spec["track_env"], OrderedDict)
+            self.assertEqual(list(spec["track_env"].items()),
+                             [("SENTINEL_ONE", "magic one"),
+                              ("SENTINEL_TWO", "magic two")])
 
     @mock.patch("alibuild_helpers.utilities.warning")
     def test_missing_replacement_spec(self, mock_warning) -> None:
