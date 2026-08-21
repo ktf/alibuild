@@ -178,7 +178,12 @@ The following entries are optional in the header:
 
     If the check exits successfully, it can also print
     `alibuild_system_replace: <key>` to request a replacement spec (see
-    `prefer_system_replacement_specs`).
+    `prefer_system_replacement_specs`), and, together with it,
+    `alibuild_system_replace_requires: <package>`,
+    `alibuild_system_replace_build_requires: <package>` and
+    `alibuild_system_replace_track_env: <NAME>=<value>` to extend that
+    replacement spec with what the check actually found on the host. Each of
+    these can be printed several times, to append more than one entry.
 
   - `prefer_system`: a regular expression for architectures which should
     use the `prefer_system_check` by default to determine if the system version
@@ -211,12 +216,33 @@ The following entries are optional in the header:
     `%(key)s` can be used in the replacement `version` and will be replaced by
     the matched `<key>`.
 
+    Besides the key itself, the check can print the following lines, each of
+    them as many times as needed. They only take effect when a replacement spec
+    is actually selected, and are applied before the package's hash is computed:
+
+      - `alibuild_system_replace_requires: <package>`: append `<package>` to the
+        replacement's `requires`;
+      - `alibuild_system_replace_build_requires: <package>`: append `<package>`
+        to the replacement's `build_requires`;
+      - `alibuild_system_replace_track_env: <NAME>=<value>`: add `<NAME>` to the
+        replacement's `track_env`. Unlike in a recipe, `<value>` is not shell
+        code to be run, but the value itself, as computed by the check. This is
+        the only way to track a variable for a replacement: a `track_env` block
+        written inside a `prefer_system_replacement_specs` entry is *not*
+        evaluated, since replacements are selected after the recipe's own
+        `track_env` has been resolved.
+
+    Entries already present in the replacement's `requires` / `build_requires`
+    are not duplicated.
+
     Example:
 
     ```yaml
     prefer_system_check: |
       python3 -m pip --help >/dev/null || exit 1
       echo 'alibuild_system_replace: python-brew3.12'
+      echo "alibuild_system_replace_requires: OpenSSL"
+      echo "alibuild_system_replace_track_env: PYTHON_EXECUTABLE=$(command -v python3)"
       exit 0
     prefer_system_replacement_specs:
       "python-brew3.*":
@@ -224,6 +250,11 @@ The following entries are optional in the header:
         env:
           PYTHON_ROOT: $(python3 -c 'import sysconfig; print(sysconfig.get_config_var("exec_prefix"))')
     ```
+
+    The above ends up with `requires: [OpenSSL]` and
+    `track_env: {PYTHON_EXECUTABLE: /opt/homebrew/bin/python3}` in the
+    replacement spec, so that the package is rebuilt if the system Python
+    moves.
 
   - `relocate_paths`: a list of toplevel paths scanned recursively to perform
     relocation of executables and dynamic libraries **on macOS only**. If not
