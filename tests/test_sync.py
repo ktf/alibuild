@@ -684,5 +684,53 @@ class Boto3TestCase(unittest.TestCase):
         return b3sync
 
 
+
+
+@patch("alibuild_helpers.sync.Boto3RemoteSync._s3_init", new=MagicMock())
+class LegacyLinkBucketTestCase(unittest.TestCase):
+    """The legacy TARS/ tree must be written as a UNIT, into one bucket.
+
+    REAPIRemoteSync stores the bytes content-addressed and can put the legacy
+    tree elsewhere (--legacy-links-store). It overrides _upload_tarball, which
+    writes the store object -- but the SYMLINKS are written by the base class,
+    which used to send them to writeStore. The two halves then split across
+    buckets, and a client reading the legacy bucket found a store object it
+    could never reach by name, because the symlink naming it was in the other
+    bucket. Every helper below must therefore follow legacyWriteStore.
+    """
+
+    def make_sync(self):
+        sync_obj = sync.Boto3RemoteSync(
+            remoteStore="b3://read", writeStore="b3://artifacts",
+            architecture=ARCHITECTURE, workdir="/sw")
+        sync_obj.legacyWriteStore = "legacy"      # as REAPIRemoteSync sets it
+        sync_obj.s3 = MagicMock()
+        return sync_obj
+
+    def test_default_is_the_artifact_bucket(self):
+        """Unset, it must not change b3:// behaviour."""
+        sync_obj = sync.Boto3RemoteSync(
+            remoteStore="b3://read", writeStore="b3://artifacts",
+            architecture=ARCHITECTURE, workdir="/sw")
+        self.assertEqual(sync_obj.legacyWriteStore, sync_obj.writeStore)
+
+    def test_link_claim_goes_to_the_legacy_bucket(self):
+        sync_obj = self.make_sync()
+        sync_obj._put_link("TARS/x/pkg/pkg.tar.gz", "store/aa/hash/pkg.tar.gz")
+        self.assertEqual(sync_obj.s3.put_object.call_args.kwargs["Bucket"], "legacy")
+
+    def test_existence_check_looks_in_the_legacy_bucket(self):
+        sync_obj = self.make_sync()
+        sync_obj._s3_key_exists("TARS/x/store/aa/hash/pkg.tar.gz")
+        self.assertEqual(sync_obj.s3.head_object.call_args.kwargs["Bucket"], "legacy")
+
+    def test_link_ownership_read_uses_the_legacy_bucket(self):
+        sync_obj = self.make_sync()
+        body = MagicMock()
+        body.read.return_value = b"store/aa/hash/pkg.tar.gz"
+        sync_obj.s3.get_object.return_value = {"Body": body}
+        sync_obj._link_is_ours("TARS/x/pkg/pkg.tar.gz", "store/aa/hash/pkg.tar.gz")
+        self.assertEqual(sync_obj.s3.get_object.call_args.kwargs["Bucket"], "legacy")
+
 if __name__ == '__main__':
     unittest.main()

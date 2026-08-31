@@ -542,6 +542,14 @@ class Boto3RemoteSync:
   def __init__(self, remoteStore, writeStore, architecture, workdir) -> None:
     self.remoteStore = re.sub("^b3://", "", remoteStore)
     self.writeStore = re.sub("^b3://", "", writeStore)
+    # Where the legacy TARS/<arch>/ tree goes. The same bucket as the artifacts
+    # unless a subclass says otherwise: REAPIRemoteSync points it elsewhere so the
+    # bytes can stay content-addressed while consumers that only know the old
+    # layout keep resolving. Defined here because the publish path below writes
+    # BOTH halves of that tree -- the store object and the symlinks -- and they
+    # have to land together, or a client finds a symlink naming a store object
+    # that is not in the bucket it is reading.
+    self.legacyWriteStore = self.writeStore
     self.architecture = architecture
     self.workdir = workdir
     self.endpoint_url = "https://s3.cern.ch"
@@ -612,7 +620,7 @@ class Boto3RemoteSync:
     from botocore.exceptions import ClientError
     try:
       remote_target = self.s3.get_object(
-        Bucket=self.writeStore, Key=link_path)["Body"].read().decode("utf-8").strip()
+        Bucket=self.legacyWriteStore, Key=link_path)["Body"].read().decode("utf-8").strip()
     except ClientError as exc:
       # Gone since we looked. Anything else and we cannot tell whose it is.
       dieOnError(exc.response.get("Error", {}).get("Code")
@@ -633,7 +641,7 @@ class Boto3RemoteSync:
     """
     from botocore.exceptions import ClientError
     try:
-      self.s3.put_object(Bucket=self.writeStore, Key=link_path, IfNoneMatch="*",
+      self.s3.put_object(Bucket=self.legacyWriteStore, Key=link_path, IfNoneMatch="*",
                          Body=link_body.encode("utf-8"))
       return True
     except ClientError as exc:
@@ -650,10 +658,15 @@ class Boto3RemoteSync:
     return (item["Key"] for pg in pages for item in pg.get("Contents", ()))
 
   def _s3_key_exists(self, key):
-    """Return whether the given key exists in the write bucket already."""
+    """Return whether the given legacy-tree key exists already.
+
+    Both callers pass a TARS/<arch>/ key -- the store object or the symlink -- so
+    this looks in the legacy bucket, which is the artifact bucket unless a
+    subclass moved it.
+    """
     from botocore.exceptions import ClientError
     try:
-      self.s3.head_object(Bucket=self.writeStore, Key=key)
+      self.s3.head_object(Bucket=self.legacyWriteStore, Key=key)
     except ClientError as err:
       if err.response["Error"]["Code"] == "404":
         return False
@@ -867,7 +880,7 @@ class Boto3RemoteSync:
     max_workers = min(32, (len(dist_symlinks) * 10) or 1)
 
     def _upload_single_symlink(link_key, hash_path):
-      self.s3.put_object(Bucket=self.writeStore,
+      self.s3.put_object(Bucket=self.legacyWriteStore,
                          Key=link_key,
                          Body=os.fsencode(hash_path),
                          ACL="public-read",
