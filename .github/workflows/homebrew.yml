@@ -1,0 +1,121 @@
+---
+# Keep the Homebrew formula in step with PyPI, on a schedule rather than as part
+# of the release.
+#
+# This used to be a `brew` job in release.yml, gated on `needs: pypi-publish`.
+# That guaranteed it ran within minutes of the upload -- and `brew
+# bump-formula-pr` re-resolves the formula's vendored Python resources with
+# `pip --uploaded-prior-to=P1D`, which ignores anything uploaded in the last DAY.
+# So the bump could never see the version it had just been asked to bump to:
+#
+#   Error: Unable to determine dependencies for "alibuild==1.17.44" ...
+#
+# It failed silently that way for at least 1.17.43 and 1.17.44, leaving the
+# formula on 1.17.42 from March while PyPI moved on twice.
+#
+# Running daily instead means the release is normally well outside that window
+# by the time we look at it, and a missed day simply retries -- so a failed bump
+# self-heals rather than stranding the formula until someone notices.
+name: Homebrew
+
+"on":
+  schedule:
+    # Daily. The exact time does not matter; what matters is that it is not
+    # "immediately after a release".
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to bump to (default: latest on PyPI)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    name: Bump the Homebrew formula to the latest PyPI release
+    runs-on: macos-latest
+    steps:
+      - name: Work out what to bump to, and whether to bump at all
+        id: check
+        run: |
+          set -euo pipefail
+
+          want='${{ inputs.version }}'
+          if [ -z "$want" ]; then
+            want=$(curl -fSsL https://pypi.org/pypi/alibuild/json | jq -r '.info.version')
+          fi
+          echo "PyPI latest: $want"
+
+          # The formula's current version, read from the tap rather than from a
+          # hardcoded path, so a formula move does not silently no-op this.
+          brew tap alisw/system-deps
+          brew trust alisw/system-deps
+          have=$(brew info --json=v2 alisw/system-deps/alibuild \
+                 | jq -r '.formulae[0].versions.stable')
+          echo "Formula has: $have"
+
+          if [ "$want" = "$have" ]; then
+            echo "Formula is already on $want; nothing to do."
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The reason this workflow exists: bump-formula-pr resolves resources
+          # with --uploaded-prior-to=P1D, so a release younger than a day cannot
+          # be resolved at all. Wait rather than fail; tomorrow's run gets it.
+          # To a FILE, then jq the file: round-tripping this JSON through a
+          # shell variable and `echo` corrupts it in any shell whose echo
+          # interprets escapes, and the payload contains the long description.
+          curl -fSsL "https://pypi.org/pypi/alibuild/${want}/json" -o pypi.json
+          sdist='[.urls[] | select(.filename | endswith(".tar.gz"))][0]'
+          uploaded=$(jq -r "$sdist.upload_time_iso_8601" pypi.json)
+          # BSD date, because this runs on a macOS runner; strip the fractional
+          # seconds, which -f cannot parse.
+          age=$(( $(date -u +%s) - $(date -u -j -f "%Y-%m-%dT%H:%M:%S" "${uploaded%.*}" +%s) ))
+          echo "Uploaded $uploaded ($((age / 3600))h ago)"
+          if [ "$age" -lt 90000 ]; then   # 25h, a comfortable margin over P1D
+            echo "$want is younger than the P1D resolution window; leaving it for a later run."
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "bump=true"
+            echo "version=$want"
+            echo "url=$(jq -r "$sdist.url" pypi.json)"
+            echo "sha=$(jq -r "$sdist.digests.sha256" pypi.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update the formula
+        if: steps.check.outputs.bump == 'true'
+        run: |
+          set -euxo pipefail
+          # Remove the PEP 668 EXTERNALLY-MANAGED marker so pip can run for
+          # dependency resolution, as the old release.yml job did.
+          find /opt/homebrew/Cellar/python@3.14 -name 'EXTERNALLY-MANAGED' -delete 2>/dev/null || true
+          brew bump-formula-pr --write-only alibuild \
+            --url "${{ steps.check.outputs.url }}" \
+            --sha256 "${{ steps.check.outputs.sha }}"
+
+      - name: Push the updated formula
+        if: steps.check.outputs.bump == 'true'
+        run: |
+          set -euxo pipefail
+          cd "$(dirname "$(brew formula alibuild)")"
+          # Nothing to push is not a failure: bump-formula-pr is a no-op when the
+          # formula already matches, and a spurious red here trains people to
+          # ignore this workflow.
+          if git diff --quiet -- alibuild.rb; then
+            echo "Formula unchanged after bump; nothing to push."
+            exit 0
+          fi
+          git config user.name alibuild
+          git config user.email 'alibuild@cern.ch'
+          git add alibuild.rb
+          git commit -m "Update alibuild to ${{ steps.check.outputs.version }}"
+          git push "https://alibuild:$GITHUB_TOKEN@github.com/alisw/homebrew-system-deps" master
+        env:
+          GITHUB_TOKEN: ${{ secrets.homebrew_repo_token }}
