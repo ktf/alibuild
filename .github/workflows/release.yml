@@ -28,40 +28,9 @@ jobs:
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
-  brew:
-    name: Update Homebrew formula
-    needs: pypi-publish
-    runs-on: macos-latest
-    if: startsWith(github.ref, 'refs/tags/') && !github.event.release.prerelease
-    steps:
-      - name: Checkout Homebrew repo
-        run: |
-          brew tap alisw/system-deps
-          brew trust alisw/system-deps
-      - name: Update alibuild formula with new version
-        run: |
-          set -x
-
-          # Remove the trailing 'v' if present in the tag name
-          version="${GITHUB_REF#refs/tags/}"
-          version="${version#v}"
-
-          json=$(curl -fSsL "https://pypi.org/pypi/alibuild/${version}/json")
-          sha=$(echo "$json" | jq -r '.urls.[] | select(.filename | endswith(".tar.gz")) | .digests.sha256')
-          url=$(echo "$json" | jq -r '.urls.[] | select(.filename | endswith(".tar.gz")) | .url')
-
-          # Remove PEP 668 EXTERNALLY-MANAGED marker so pip can run for dependency resolution
-          find /opt/homebrew/Cellar/python@3.14 -name 'EXTERNALLY-MANAGED' -delete 2>/dev/null || true
-
-          brew bump-formula-pr --write-only alibuild --url "${url}" --sha256 "${sha}"
-      - name: Push updated formula
-        run: |
-          set -x
-          cd "$(dirname "$(brew formula alibuild)")"
-          git config user.name alibuild
-          git config user.email 'alibuild@cern.ch'
-          git add alibuild.rb
-          git commit -m "Update alibuild to ${GITHUB_REF#refs/tags/}"
-          git push "https://alibuild:$GITHUB_TOKEN@github.com/alisw/homebrew-system-deps" master
-        env:
-          GITHUB_TOKEN: ${{ secrets.homebrew_repo_token }}
+  # The Homebrew formula is bumped by homebrew.yml on a schedule, NOT here.
+  # A job gated on `needs: pypi-publish` necessarily runs minutes after the
+  # upload, and `brew bump-formula-pr` resolves the formula's Python resources
+  # with `pip --uploaded-prior-to=P1D` -- which ignores anything uploaded in the
+  # last day. It could therefore never resolve the version it was bumping to,
+  # and failed that way for 1.17.43 and 1.17.44, leaving the formula on 1.17.42.
