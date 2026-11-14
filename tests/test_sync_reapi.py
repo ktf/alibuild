@@ -78,18 +78,23 @@ class REAPIRemoteSyncTestCase(unittest.TestCase):
         reapi.s3 = client
         return reapi
 
-    def make_client(self, existing=()):
+    def make_client(self, existing=(), age_days=0, retention=None):
         """Mock S3 client: head_object 404s unless the key is in `existing`,
-        and all directory listings are empty (so uploads see no conflicts)."""
+        and all directory listings are empty (so uploads see no conflicts).
+        Existing objects are `age_days` old and tagged with `retention`."""
         from botocore.exceptions import ClientError
+        from datetime import datetime, timezone, timedelta
 
         def head_object(Bucket, Key):
             if Key in existing:
-                return {"ContentLength": 4096}
+                return {"ContentLength": 4096, "ContentType": "application/gzip",
+                        "LastModified": datetime.now(timezone.utc) - timedelta(days=age_days)}
             raise ClientError({"Error": {"Code": "404"}}, "head_object")
 
         return MagicMock(
             head_object=MagicMock(side_effect=head_object),
+            get_object_tagging=MagicMock(return_value={"TagSet": [
+                {"Key": "retention", "Value": retention}] if retention else []}),
             get_paginator=lambda method: MagicMock(
                 paginate=lambda **kw: [{"Contents": []}]),
             put_object=MagicMock(return_value=None),
@@ -222,6 +227,31 @@ class REAPIRemoteSyncTestCase(unittest.TestCase):
            new=lambda path: [tarball_name(REAPI_SPEC)] if path.endswith("-1") else [])
     @patch("os.readlink", new=MagicMock(return_value="../../store/de/dead/x.tar.gz"))
     @patch("os.path.islink", new=MagicMock(return_value=True))
+    def test_upload_read_only_store_is_a_noop_with_deps(self) -> None:
+        # A read-only store (e.g. the isolated rebuild of `aliBuild reconstruct`)
+        # must not run the ledger check: it has no AC write bucket, and looking a
+        # dependency up in "" raised ParamValidationError for every package with
+        # dependencies.
+        client = self.make_client()
+        reapi = sync_reapi.REAPIRemoteSync(
+            remoteStore="reapi://localhost/bucket", writeStore="",
+            architecture=ARCHITECTURE, workdir="/sw")
+        reapi.s3 = client
+        spec = json.loads(json.dumps(REAPI_SPEC))
+        spec["ac_entry"]["action"]["deps"] = [
+            {"actionHash": "0" * 40, "package": "dep"}]
+        reapi.upload_symlinks_and_tarball(spec)
+        client.head_object.assert_not_called()
+        client.put_object.assert_not_called()
+        client.upload_file.assert_not_called()
+
+    @patch("alibuild_helpers.sync_reapi.file_digest",
+           new=MagicMock(return_value=REAPI_CONTENT_HASH))
+    @patch("os.path.getsize", new=MagicMock(return_value=4096))
+    @patch("os.listdir",
+           new=lambda path: [tarball_name(REAPI_SPEC)] if path.endswith("-1") else [])
+    @patch("os.readlink", new=MagicMock(return_value="../../store/de/dead/x.tar.gz"))
+    @patch("os.path.islink", new=MagicMock(return_value=True))
     def test_upload_dedups_existing_cas_blob(self) -> None:
         # The CAS already has the tarball bytes (e.g. from an equivalent hash).
         client = self.make_client(existing={resolve_cas_path(REAPI_CONTENT_HASH)})
@@ -230,6 +260,62 @@ class REAPIRemoteSyncTestCase(unittest.TestCase):
         # We must not re-upload identical bytes, but we still write the AC entry.
         client.upload_file.assert_not_called()
         self.assertIn(resolve_ac_path(ARCHITECTURE, REAPI_HASH), self.put_keys(client))
+
+    @patch("alibuild_helpers.sync_reapi.file_digest",
+           new=MagicMock(return_value=REAPI_CONTENT_HASH))
+    @patch("os.path.getsize", new=MagicMock(return_value=4096))
+    @patch("os.listdir",
+           new=lambda path: [tarball_name(REAPI_SPEC)] if path.endswith("-1") else [])
+    @patch("os.readlink", new=MagicMock(return_value="../../store/de/dead/x.tar.gz"))
+    @patch("os.path.islink", new=MagicMock(return_value=True))
+    def test_upload_dedup_refreshes_expiring_ephemeral(self) -> None:
+        """Identical rebuilds always dedup, so the dedup must keep the blob alive:
+        otherwise a package that never changes expires 90 days after its first
+        build, while its AC entry and store stub still point at it."""
+        cas = resolve_cas_path(REAPI_CONTENT_HASH)
+        for age_days, refreshed in ((75, True), (10, False)):
+            client = self.make_client(existing={cas}, age_days=age_days,
+                                      retention="ephemeral")
+            self.make_sync(client).upload_symlinks_and_tarball(REAPI_SPEC)
+            client.upload_file.assert_not_called()
+            if not refreshed:
+                client.copy_object.assert_not_called()
+                continue
+            # Copied onto itself in the bucket we write, tags kept. COPY would be
+            # refused by S3 and Ceph RGW for a self-copy, so it must be REPLACE.
+            client.copy_object.assert_called_once()
+            kw = client.copy_object.call_args.kwargs
+            self.assertEqual((kw["Bucket"], kw["Key"]), ("bucket", cas))
+            self.assertEqual(kw["CopySource"], {"Bucket": "bucket", "Key": cas})
+            self.assertEqual(kw["MetadataDirective"], "REPLACE")
+            self.assertEqual(kw["ContentType"], "application/gzip")
+            self.assertEqual(kw["TaggingDirective"], "COPY")
+
+    def test_is_published_keep_alive(self) -> None:
+        """A package the build takes from the store never reaches the upload, so
+        is_published(keep_alive=True), asked for every reused package, is what
+        promotes its blob on a permanent build (or LRU-refreshes it)."""
+        cas = resolve_cas_path(REAPI_CONTENT_HASH)
+        entry = {"result": {"outputDigest": "sha256:" + REAPI_CONTENT_HASH}}
+        for keep_alive in (False, True):
+            client = self.make_client(existing={cas}, age_days=5, retention="ephemeral")
+            reapi = self.make_sync(client)
+            reapi.storage = "permanent"
+            reapi.read_ac_entry = MagicMock(return_value=entry)
+            self.assertTrue(reapi.is_published(REAPI_HASH, keep_alive=keep_alive))
+            if keep_alive:
+                client.put_object_tagging.assert_called_once_with(
+                    Bucket="bucket", Key=cas,
+                    Tagging={"TagSet": [{"Key": "retention", "Value": "permanent"}]})
+            else:
+                client.put_object_tagging.assert_not_called()
+        # An ephemeral build refreshes it only when it is close to expiry.
+        client = self.make_client(existing={cas}, age_days=70, retention="ephemeral")
+        reapi = self.make_sync(client)
+        reapi.read_ac_entry = MagicMock(return_value=entry)
+        self.assertTrue(reapi.is_published(REAPI_HASH, keep_alive=True))
+        client.copy_object.assert_called_once()
+        client.put_object_tagging.assert_not_called()
 
     @patch("alibuild_helpers.sync_reapi.file_digest",
            new=MagicMock(return_value=REAPI_CONTENT_HASH))
@@ -511,6 +597,51 @@ class REAPIRemoteSyncTestCase(unittest.TestCase):
         # storage restored to its original value afterwards (no leak).
         self.assertEqual(reapi.storage, "ephemeral")
 
+    @patch("alibuild_helpers.signing.sign_via_proxy")
+    @patch("os.path.getsize", new=MagicMock(return_value=4096))
+    def test_rebaseline_resigns_and_publishes_to_the_legacy_store(self, sign_via_proxy) -> None:
+        """A re-baselined entry carries a fresh signature over the NEW digest, and
+        its store object and link go to the legacy bucket with an absolute redirect."""
+        sign_via_proxy.return_value = {"keyid": "new", "signer": "ci", "sig": "fresh"}
+        old_hash, new_hash = "a" * 64, "b" * 64
+        client = self.make_client()
+        reapi = sync_reapi.REAPIRemoteSync(
+            remoteStore="reapi://localhost/bucket", writeStore="reapi://localhost/bucket",
+            architecture=ARCHITECTURE, workdir="/sw", legacyStore="reapi://localhost/legacy",
+            casPublicUrl="https://example/cas", sign_url="https://proxy/sign",
+            sign_token="tok")
+        reapi.s3 = client
+        entry = {
+            "schemaVersion": 3,
+            "action": {"package": "zlib", "version": "v1", "revision": "1",
+                       "architecture": ARCHITECTURE, "actionHash": REAPI_HASH,
+                       "recipeDigest": "sha256:" + REAPI_RECIPE_DIGEST},
+            "result": {"tarball": "zlib-v1-1.%s.tar.gz" % ARCHITECTURE,
+                       "outputDigest": "sha256:" + old_hash, "size": 1},
+            "signatures": [{"keyid": "old", "signer": "ci", "sig": "stale"}],
+        }
+        with patch("alibuild_helpers.sync_reapi.file_digest", return_value=new_hash):
+            reapi.rebaseline_ac_entry(entry, "/tmp/zlib.tar.gz", "recipe")
+        # Signed over the new digest, with the stale signature gone.
+        signed = sign_via_proxy.call_args.args[0]
+        self.assertEqual(signed["result"]["outputDigest"], "sha256:" + new_hash)
+        self.assertNotIn("signatures", signed)
+        puts = {c.kwargs["Key"]: c.kwargs for c in client.put_object.call_args_list}
+        ac = json.loads(puts[resolve_ac_path(ARCHITECTURE, REAPI_HASH)]["Body"].decode())
+        self.assertEqual(ac["signatures"], [sign_via_proxy.return_value])
+        self.assertEqual(ac["result"]["outputDigest"], "sha256:" + new_hash)
+        # Store object and link: legacy bucket, absolute redirect to the new blob.
+        tarball = "zlib-v1-1.%s.tar.gz" % ARCHITECTURE
+        stub = puts[resolve_store_path(ARCHITECTURE, REAPI_HASH) + "/" + tarball]
+        link = puts[resolve_links_path(ARCHITECTURE, "zlib") + "/" + tarball]
+        self.assertEqual(stub["Bucket"], "legacy")
+        self.assertEqual(stub["WebsiteRedirectLocation"],
+                         "https://example/cas/" + resolve_cas_path(new_hash))
+        self.assertEqual(link["Bucket"], "legacy")
+        # The bytes and the ledger stay where they were.
+        self.assertEqual(client.upload_file.call_args.kwargs["Bucket"], "bucket")
+        self.assertEqual(puts[resolve_ac_path(ARCHITECTURE, REAPI_HASH)]["Bucket"], "bucket")
+
     @patch("alibuild_helpers.sync_reapi.file_digest", new=MagicMock(return_value="e" * 64))
     @patch("os.path.getsize", new=MagicMock(return_value=4096))
     def test_put_legacy_artifact(self) -> None:
@@ -564,6 +695,25 @@ class REAPIRemoteSyncTestCase(unittest.TestCase):
             return_value={"LastModified": datetime.now(timezone.utc) - timedelta(days=10)})
         reapi.download_artifact(REAPI_CONTENT_HASH, "/tmp/x")
         client.copy_object.assert_not_called()        # fresh (10d < 60d), no refresh
+
+    @patch("os.path.exists", new=MagicMock(return_value=False))
+    def test_download_old_untagged_blob(self) -> None:
+        # A blob from before retention tags: Ceph RGW answers GetObjectTagging
+        # with no TagSet at all. That must read as "untagged" (no refresh),
+        # not crash the build with KeyError.
+        from datetime import datetime, timezone, timedelta
+        client = self.make_client()
+        client.get_object_tagging = MagicMock(return_value={"ResponseMetadata": {}})
+        client.head_object = MagicMock(
+            return_value={"LastModified": datetime.now(timezone.utc) - timedelta(days=400)})
+        client.copy_object = MagicMock()
+        reapi = sync_reapi.REAPIRemoteSync("reapi://localhost/bucket", "reapi://localhost/bucket",
+                                     architecture=ARCHITECTURE, workdir="/sw",
+                                     storage="ephemeral")
+        reapi.s3 = client
+        self.assertIsNone(reapi._retention_of("bucket", "key"))
+        reapi.download_artifact(REAPI_CONTENT_HASH, "/tmp/x")
+        client.copy_object.assert_not_called()
 
     @patch("glob.glob", new=MagicMock(return_value=[]))
     @patch("os.makedirs", new=MagicMock())

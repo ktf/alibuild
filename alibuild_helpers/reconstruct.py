@@ -66,6 +66,17 @@ def add_parser(subparsers, detected_arch, work_dir_default):
                  help="With --verify --rebuild: treat a non-identical rebuilt tarball as a failure "
                       "(default: soft, since legacy pre-normalisation tarballs are not "
                       "bit-reproducible).")
+  p.add_argument("--docker-image", dest="dockerImage", default=None, metavar="IMAGE",
+                 help="Rebuild in IMAGE instead of the build container recorded in the AC "
+                      "entry, e.g. when that image is gone from the registry. The container "
+                      "is not an input to the action hash; --rebaseline --apply records "
+                      "IMAGE as the entry's action.container.")
+  p.add_argument("--docker-extra-args", dest="dockerExtraArgs", default="", metavar="ARGLIST",
+                 help="As for 'aliBuild build': passed to the rebuild's 'docker run', e.g. "
+                      "--docker-extra-args='--cpus=8 --memory=32g' (with '=').")
+  p.add_argument("-j", "--jobs", dest="jobs", type=int, default=None, metavar="N",
+                 help="Parallel compilation processes for the rebuild ('aliBuild build -j'). "
+                      "Default: build's, all the cores of the machine.")
   p.add_argument("--alidist", dest="alidist", default=None, metavar="DIR",
                  help="alidist checkout used to supply the defaults config file "
                       "(defaults-<name>.sh) when it is not archived in the ledger (it is a config, "
@@ -93,6 +104,25 @@ def add_parser(subparsers, detected_arch, work_dir_default):
                  choices=("ephemeral", "permanent"),
                  help="Retention tag for a blob restored by --persist. Default '%(default)s' (a "
                       "deliberately reconstructed blob should not be LRU-expired).")
+  # Publishing options, spelt as `aliBuild build` spells them: --rebaseline --apply
+  # rewrites the legacy store object and link, and the AC entry it re-signs.
+  p.add_argument("--legacy-links-store", dest="legacyStore", default="", metavar="STORE",
+                 help="As for 'aliBuild build': where the legacy TARS/<arch>/ links and "
+                      "store objects live, if not in the artifact store.")
+  p.add_argument("--cas-public-url", dest="casPublicUrl", default="", metavar="URL",
+                 help="As for 'aliBuild build': public base URL of the CAS bucket, which "
+                      "the store objects in --legacy-links-store redirect to.")
+  p.add_argument("--sign-url", dest="signUrl", default="", metavar="URL",
+                 help="Security-proxy sign route for the re-baselined AC entry. "
+                      "--rebaseline --apply requires it unless --no-sign.")
+  p.add_argument("--sign-token", dest="signToken", default="", metavar="TOKEN",
+                 help="Gate token presented to --sign-url.")
+  p.add_argument("--sign-token-file", dest="signTokenFile", default="", metavar="FILE",
+                 help="Read the credential for --sign-url from FILE, for every request.")
+  p.add_argument("--signer", dest="signer", default="alibuild", metavar="NAME",
+                 help="Signer label recorded in the signature. Default '%(default)s'.")
+  p.add_argument("--no-sign", dest="noSign", action="store_true",
+                 help="Re-baseline without signing: the AC entry is left unsigned.")
   return p
 
 
@@ -449,6 +479,11 @@ def verify_rebuild(args, sync, closure, build_runner=None):
     ac_store = ac_store[:-4]
   container = entry["action"].get("container") or {}
   image = container.get("digest") or container.get("image")
+  if getattr(args, "dockerImage", None):
+    warning("NOT rebuilding %s in its recorded build container:\n"
+            "    recorded: %s\n    using   : %s",
+            args.package, image or "none (native build)", args.dockerImage)
+    image = args.dockerImage
   # Rebuild with the defaults this build actually used (they feed the action
   # hash), not a hardcoded guess: prefer the recorded field, else recover the
   # flavour from the archived defaults recipe (migrated entries lack the field).
@@ -456,9 +491,12 @@ def verify_rebuild(args, sync, closure, build_runner=None):
               or defaults_from_closure(sync, closure) or "release")
 
   # Read-only remote store (no ::rw) => dependencies are fetched and reused,
-  # nothing is uploaded. --force-rebuild only the target, so only it is
-  # recompiled; its action hash changes but that does not affect the *content*
-  # we compare against the recorded output digest. Propagate -d so the rebuild
+  # nothing is uploaded. The action hash and the revision are in the tarball
+  # (.meta.json, init.sh, relocate-me.sh), so a rebuild can only reproduce the
+  # recorded bytes under the recorded ones: a missing blob is rebuilt anyway, and
+  # with the legacy links in view the recorded revision is reused. Only a present
+  # blob needs --force-rebuild, which randomises the hash and takes a localN
+  # revision, so that rebuild never matches. Propagate -d so the rebuild
   # streams a debug build log when reconstruct is run with --debug (-d is a
   # global flag, so it must precede the "build" subcommand).
   # Re-invoke through the *same interpreter*, not just the same script: executing
@@ -476,16 +514,24 @@ def verify_rebuild(args, sync, closure, build_runner=None):
           # dependency (e.g. alibuild-recipe-tools under the cwd) would otherwise
           # be picked up as a development package -- rebuilt from local sources and,
           # worse, disabling the remote write store for the whole build.
-          "--force-tracked",
-          "--force-rebuild", args.package, "--defaults", defaults]
+          "--force-tracked", "--defaults", defaults]
+  if sync.artifact_blob_exists(recorded_hash, algo):
+    cmd += ["--force-rebuild", args.package]
   if ac_store:
     cmd += ["--ac-store", ac_store]
+  if getattr(args, "legacyStore", ""):
+    cmd += ["--legacy-links-store", args.legacyStore,
+            "--cas-public-url", args.casPublicUrl]
   if getattr(args, "insecure", False):
     cmd += ["--insecure"]
   if os.path.isdir(reference_dir):
     cmd += ["--reference-sources", reference_dir]
+  if getattr(args, "jobs", None):
+    cmd += ["-j", str(args.jobs)]
   if image:
     cmd += ["--docker", "--docker-image", image]
+    if getattr(args, "dockerExtraArgs", ""):
+      cmd.append("--docker-extra-args=" + args.dockerExtraArgs)
 
   # The materialised recipes are a plain directory, not an SCM checkout; pass the
   # alidist provenance explicitly so the build doesn't require a git repo (the
@@ -548,6 +594,17 @@ def do_rebaseline(args, sync, closure, result):
        result.algo, result.rebuilt)
   info("  orphaned old CAS blob: %s%s", old_cas,
        " (will delete)" if getattr(args, "delete_old", False) else " (left in place)")
+  if getattr(args, "dockerImage", None):
+    # Rebuilt in another image: record the one actually used, as `aliBuild build`
+    # does. Not in the action hash nor in the signed payload, so the entry keeps
+    # its key and is re-signed below like any re-baseline.
+    from argparse import Namespace
+    from alibuild_helpers.build import resolve_container_provenance
+    container = resolve_container_provenance(Namespace(docker=True,
+                                                       dockerImage=args.dockerImage))
+    info("  rewrite action.container: %s -> %s", entry["action"].get("container"),
+         container)
+    entry = dict(entry, action=dict(entry["action"], container=container))
 
   if not getattr(args, "apply", False):
     warning("DRY RUN: nothing written. Re-run with --apply to perform the "
@@ -686,10 +743,26 @@ def doReconstruct(args, parser):
   ac_store = (getattr(args, "acStore", "") or "").rstrip()
   if ac_store.endswith("::rw"):
     ac_store = ac_store[:-4]
+  # A re-baseline changes the digest the AC entry's signature covers, so it must
+  # re-sign it: refuse to write without a way to, as `aliBuild build` does.
+  no_sign = getattr(args, "noSign", False)
+  dieOnError(getattr(args, "rebaseline", False) and getattr(args, "apply", False) and
+             not no_sign and not (getattr(args, "signUrl", "") and
+                                  (getattr(args, "signToken", "") or
+                                   getattr(args, "signTokenFile", ""))),
+             "--rebaseline --apply re-signs the rewritten Action Cache entry: pass "
+             "--sign-url and --sign-token (or --sign-token-file), or --no-sign to "
+             "leave it unsigned.")
   sync = remote_from_url(args.remoteStore, args.remoteStore, args.architecture,
                          args.workDir, getattr(args, "insecure", False),
                          ac_url=ac_store, ac_write_url=ac_store,
-                         storage=getattr(args, "storage", "permanent"))
+                         storage=getattr(args, "storage", "permanent"),
+                         sign_url="" if no_sign else getattr(args, "signUrl", ""),
+                         sign_token=getattr(args, "signToken", ""),
+                         sign_token_file=getattr(args, "signTokenFile", ""),
+                         signer=getattr(args, "signer", "alibuild"),
+                         legacy_url=getattr(args, "legacyStore", ""),
+                         cas_public_url=getattr(args, "casPublicUrl", ""))
   dieOnError(not isinstance(sync, REAPIRemoteSync),
              "'aliBuild reconstruct' requires a reapi:// remote store, but got %r" %
              (args.remoteStore or "(none)"))
